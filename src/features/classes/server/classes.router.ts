@@ -1,8 +1,12 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
-import { classes, bookings, users } from "@/db/schema";
+import { and, asc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { classes, bookings, corporateBookings, users } from "@/db/schema";
 import { nowIso } from "@/lib/datetime";
+import { findConfirmedBookings } from "@/features/bookings/server/booking-repository";
+import { findActiveCorporateBookings, refundToPool } from "@/features/corporate/server/company-credits";
+import { refundCredits } from "@/features/memberships/server/membership-credits";
+import { notifyClassCancelled } from "@/features/notifications/server/notify";
 import {
   router,
   publicProcedure,
@@ -39,10 +43,21 @@ export const classesRouter = router({
           creditCost: classes.creditCost,
           cancelled: classes.cancelled,
           trainerName: users.name,
+          // Counts attended as well as booked: someone who has already been
+          // checked in still occupies their spot. Counting only 'booked' made
+          // spots appear to free up as members arrived, so a full class could
+          // be over-booked from the public schedule.
+          //
+          // The leftJoin below is load-bearing for this subquery, not just for
+          // the trainer name: Drizzle emits column references unqualified when
+          // a query has no join, which would turn
+          // `bookings.class_id = classes.id` into `bookings.class_id =
+          // bookings.id` and quietly uncorrelate the count. Don't remove the
+          // join without rewriting this.
           booked: sql<number>`(
             select count(*) from ${bookings}
             where ${bookings.classId} = ${classes.id}
-              and ${bookings.status} = 'booked'
+              and ${bookings.status} in ('booked','attended')
           )`.as("booked"),
         })
         .from(classes)
@@ -135,28 +150,69 @@ export const classesRouter = router({
       return updated;
     }),
 
+  /**
+   * Calls a class off.
+   *
+   * Everyone booked or waitlisted on it is cancelled and made whole: the studio
+   * cancelling is not the member's fault, so credits come back regardless of
+   * how close to the start time it happens — unlike a member cancelling, which
+   * only refunds outside the 12-hour window. Corporate bookings are cancelled
+   * too and their credits returned to the employer's pool; previously they were
+   * left booked against a class that would never run.
+   */
   cancel: adminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const cls = await ctx.db
-        .update(classes)
-        .set({ cancelled: true })
+      const existing = await ctx.db
+        .select()
+        .from(classes)
         .where(eq(classes.id, input.id))
-        .returning()
         .get();
 
-      if (!cls) {
+      if (!existing) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Class not found." });
       }
 
-      // Confirmed bookings are cancelled with the class. Waitlisted rows are
-      // deliberately left as they are.
-      await ctx.db
-        .update(bookings)
-        .set({ status: "cancelled", cancelledAt: nowIso() })
-        .where(
-          and(eq(bookings.classId, input.id), eq(bookings.status, "booked")),
-        );
+      const { cls, affectedUserIds } = await ctx.db.transaction(async (tx) => {
+        const updated = await tx
+          .update(classes)
+          .set({ cancelled: true })
+          .where(eq(classes.id, input.id))
+          .returning()
+          .get();
+
+        const personal = await findConfirmedBookings(tx, input.id);
+        const corporate = await findActiveCorporateBookings(tx, input.id);
+
+        for (const booking of personal) {
+          await tx
+            .update(bookings)
+            .set({ status: "cancelled", cancelledAt: nowIso() })
+            .where(eq(bookings.id, booking.id));
+
+          if (booking.membershipId && booking.creditsUsed > 0) {
+            await refundCredits(tx, booking.membershipId, booking.creditsUsed);
+          }
+        }
+
+        for (const booking of corporate) {
+          await tx
+            .update(corporateBookings)
+            .set({ status: "cancelled", cancelledAt: nowIso() })
+            .where(eq(corporateBookings.id, booking.id));
+
+          if (booking.creditsUsed > 0) {
+            await refundToPool(tx, booking.companyId, booking.creditsUsed);
+          }
+        }
+
+        return {
+          cls: updated,
+          affectedUserIds: [...personal, ...corporate].map((b) => b.userId),
+        };
+      });
+
+      await notifyClassCancelled(ctx.db, affectedUserIds, cls);
 
       return cls;
     }),

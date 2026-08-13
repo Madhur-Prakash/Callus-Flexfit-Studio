@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Badge, color } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
+import { useNowIso } from "@/lib/hooks/use-now-iso";
 import { trpc } from "@/lib/trpc/client";
 
 type RescheduleTarget = {
@@ -27,7 +28,7 @@ export function RescheduleModal({
   const utils = trpc.useUtils();
 
   const { data: availableClasses } = trpc.classes.list.useQuery(
-    { from: new Date().toISOString() },
+    { from: useNowIso() },
     { enabled: target !== null },
   );
 

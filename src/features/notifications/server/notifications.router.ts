@@ -39,12 +39,12 @@ export const notificationsRouter = router({
   broadcast: adminProcedure
     .input(z.object({ title: z.string(), message: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      // Goes to everyone with the member role. Note this includes deactivated
-      // accounts — see documents/FINDINGS.md.
+      // Active members only. Deactivated accounts used to be included, which
+      // both spammed closed accounts and inflated the count reported back.
       const recipients = await ctx.db
         .select({ id: users.id })
         .from(users)
-        .where(eq(users.role, "member"));
+        .where(and(eq(users.role, "member"), eq(users.active, true)));
 
       if (recipients.length === 0) {
         return { ok: true, count: 0 };

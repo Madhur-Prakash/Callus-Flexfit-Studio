@@ -9,6 +9,12 @@
   --text: #e6e8ec;
   --muted: #8b93a3;
   --accent: #4ade80;
+
+  /* Referenced by the kiosk and trainer controls, which previously pointed at
+     variables that were never declared, so the browser dropped the rules and
+     those inputs rendered with default browser styling. */
+  --bg-secondary: #212633;
+  --fg: var(--text);
 }
 
 body {
@@ -51,6 +57,43 @@ body {
 
 .btn-primary:hover:not(:disabled) {
   background: #37c96f;
+}
+
+/* These three were used across the admin and kiosk screens but never defined,
+   here or by Tailwind, so those buttons rendered unstyled. */
+.btn-sm {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8125rem;
+}
+
+.btn-danger {
+  background: #7f1d1d;
+  border-color: #dc2626;
+  color: #fca5a5;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #991b1b;
+}
+
+.btn-outline {
+  border-radius: 8px;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+
+.btn-outline:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .input {

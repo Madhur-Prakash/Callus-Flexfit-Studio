@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { asc, eq } from "drizzle-orm";
-import type { Database } from "@/db/client";
 import { checkins, classes, companies, corporateBookings, users } from "@/db/schema";
 import { nowIso } from "@/lib/datetime";
 import { isStaff } from "@/lib/roles";
@@ -10,15 +9,15 @@ import {
   assertClassIsBookable,
   isRefundableCancellation,
 } from "@/features/bookings/server/booking-policy";
+import { notifyWaitlistPromotion } from "@/features/notifications/server/notify";
 import { router, protectedProcedure, staffProcedure } from "@/server/trpc/procedures";
 import {
-  chargePoolForPromotion,
   CORPORATE_FREE_CANCELLATION_HOURS,
   countConfirmedCorporateBookings,
   debitPool,
   findActiveCompanyFor,
   findActiveCorporateBooking,
-  findNextWaitlistedCorporate,
+  promoteFromCorporateWaitlist,
   refundToPool,
 } from "./company-credits";
 
@@ -89,27 +88,29 @@ export const corporateBookingsRouter = router({
         });
       }
 
-      const isFull =
-        (await countConfirmedCorporateBookings(ctx.db, cls.id)) >= cls.capacity;
+      return ctx.db.transaction(async (tx) => {
+        const isFull =
+          (await countConfirmedCorporateBookings(tx, cls.id)) >= cls.capacity;
 
-      const created = await ctx.db
-        .insert(corporateBookings)
-        .values({
-          classId: cls.id,
-          userId: ctx.user.id,
-          companyId: company.id,
-          status: isFull ? "waitlisted" : "booked",
-          creditsUsed: isFull ? 0 : cls.creditCost,
-        })
-        .returning()
-        .get();
+        const created = await tx
+          .insert(corporateBookings)
+          .values({
+            classId: cls.id,
+            userId: ctx.user.id,
+            companyId: company.id,
+            status: isFull ? "waitlisted" : "booked",
+            creditsUsed: isFull ? 0 : cls.creditCost,
+          })
+          .returning()
+          .get();
 
-      // Waitlisted spots are charged on promotion, not now.
-      if (!isFull) {
-        await debitPool(ctx.db, company, cls.creditCost);
-      }
+        // Waitlisted spots are charged on promotion, not now.
+        if (!isFull) {
+          await debitPool(tx, company, cls.creditCost);
+        }
 
-      return created;
+        return created;
+      });
     }),
 
   cancel: protectedProcedure
@@ -134,18 +135,23 @@ export const corporateBookingsRouter = router({
         CORPORATE_FREE_CANCELLATION_HOURS,
       );
 
-      await ctx.db
-        .update(corporateBookings)
-        .set({ status: "cancelled", cancelledAt: nowIso() })
-        .where(eq(corporateBookings.id, row.booking.id));
+      const promoted = await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(corporateBookings)
+          .set({ status: "cancelled", cancelledAt: nowIso() })
+          .where(eq(corporateBookings.id, row.booking.id));
 
-      if (refundable) {
-        await refundToPool(ctx.db, row.booking.companyId, row.booking.creditsUsed);
-      }
+        if (refundable) {
+          await refundToPool(tx, row.booking.companyId, row.booking.creditsUsed);
+        }
 
-      // Freeing a confirmed spot promotes the member who has waited longest.
-      if (row.booking.status === "booked") {
-        await promoteFromCorporateWaitlist(ctx.db, row.cls);
+        return row.booking.status === "booked"
+          ? promoteFromCorporateWaitlist(tx, row.cls)
+          : null;
+      });
+
+      if (promoted) {
+        await notifyWaitlistPromotion(ctx.db, promoted.userId, row.cls);
       }
 
       return { ok: true, refunded: refundable };
@@ -175,19 +181,17 @@ export const corporateBookingsRouter = router({
         });
       }
 
-      await ctx.db
-        .update(corporateBookings)
-        .set({ status: "attended" })
-        .where(eq(corporateBookings.id, booking.id));
+      await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(corporateBookings)
+          .set({ status: "attended" })
+          .where(eq(corporateBookings.id, booking.id));
 
-      // KNOWN QUIRK, PRESERVED: `checkins.booking_id` is a foreign key onto the
-      // personal `bookings` table, so a corporate booking id cannot be stored
-      // there and is written as null. `input.source` is accepted but dropped,
-      // so every corporate check-in records as "front_desk". See
-      // documents/FINDINGS.md before changing this.
-      await ctx.db.insert(checkins).values({
-        userId: booking.userId,
-        bookingId: null,
+        await tx.insert(checkins).values({
+          userId: booking.userId,
+          corporateBookingId: booking.id,
+          source: input.source,
+        });
       });
 
       return { ok: true };
@@ -213,18 +217,3 @@ export const corporateBookingsRouter = router({
         .orderBy(asc(corporateBookings.bookedAt));
     }),
 });
-
-async function promoteFromCorporateWaitlist(
-  db: Database,
-  cls: { id: number; creditCost: number },
-) {
-  const next = await findNextWaitlistedCorporate(db, cls.id);
-  if (!next) return;
-
-  await db
-    .update(corporateBookings)
-    .set({ status: "booked", creditsUsed: cls.creditCost })
-    .where(eq(corporateBookings.id, next.id));
-
-  await chargePoolForPromotion(db, next.companyId, cls.creditCost);
-}

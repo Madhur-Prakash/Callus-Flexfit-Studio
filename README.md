@@ -83,6 +83,8 @@ where each one lives.
 - [`documents/ARCHITECTURE.md`](documents/ARCHITECTURE.md) — the structure, the
   reasoning behind it, the alternatives rejected, and how the restructure was
   checked against the original behaviour.
-- [`documents/FINDINGS.md`](documents/FINDINGS.md) — bugs and oddities found in
-  the existing code. All of them are still there, behaving as they always have;
-  each entry has a repro and the fix.
+- [`documents/FINDINGS.md`](documents/FINDINGS.md) — bugs found in the existing
+  code and what was done about them. Read this before comparing against the
+  original: several fixes deliberately change what you see on screen, including
+  the admin utilisation figures and what happens to your credits when the studio
+  cancels a class.

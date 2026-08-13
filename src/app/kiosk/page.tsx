@@ -74,13 +74,16 @@ export default function KioskPage() {
     return <AccessDenied audience="Staff only." />;
   }
 
-  // The most recent membership is the one the desk cares about.
+  // The most recent membership is the one the desk cares about. These drive
+  // warnings only, never the button: checking in costs nothing, because the
+  // credit was already spent when the class was booked. Gating on them turned
+  // away members who had paid — anyone who had used their last credit, or whose
+  // membership lapsed after booking, was refused at the door.
   const latestMembership = memberDetails.data?.memberships?.[0];
   const isMembershipExpired = latestMembership
     ? new Date(latestMembership.endDate) < new Date()
     : false;
   const hasNoCredits = latestMembership?.creditsRemaining === 0;
-  const blockCheckin = isMembershipExpired || hasNoCredits;
 
   return (
     <div className="space-y-8">
@@ -176,7 +179,7 @@ export default function KioskPage() {
                       onClick={() =>
                         markAttended.mutate({ bookingId: cls.bookingId, source: "kiosk" })
                       }
-                      disabled={markAttended.isPending || blockCheckin}
+                      disabled={markAttended.isPending}
                       className="btn btn-primary btn-sm ml-4"
                     >
                       Check in

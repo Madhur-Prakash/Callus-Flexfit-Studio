@@ -18,8 +18,8 @@ import {
 
 let db: TestDb;
 
-beforeEach(() => {
-  db = createTestDb();
+beforeEach(async () => {
+  db = await createTestDb();
 });
 
 describe("members.profile", () => {
@@ -179,18 +179,13 @@ describe("admin.stats", () => {
 
 describe("admin.classUtilisation", () => {
   /**
-   * KNOWN BUG, DELIBERATELY PINNED. The `booked` subquery is written as a
-   * correlated subquery, but because the outer query has no join Drizzle emits
-   * its column references unqualified:
-   *
-   *   select count(*) from "bookings" where "class_id" = "id" ...
-   *
-   * Inside the subquery both names resolve to `bookings`, so the intended
-   * `bookings.class_id = classes.id` becomes `bookings.class_id = bookings.id`.
-   * The subquery is therefore uncorrelated and every class reports the same
-   * number. See documents/FINDINGS.md for the one-line fix.
+   * Regression guard. The `booked` subquery has no join to force Drizzle to
+   * qualify its columns, so without the explicit table alias it emits
+   * `where "class_id" = "id"` — both resolving to bookings — and silently
+   * stops being correlated. Every class then reports the same number.
+   * Two classes with different booking counts is what catches that.
    */
-  it("reports the same uncorrelated count for every class (known bug)", async () => {
+  it("counts each class's own bookings, attended included", async () => {
     const clsOne = await makeClass(db, { capacity: 4 });
     const clsTwo = await makeClass(db, { capacity: 8, startsAt: hoursFromNow(72) });
 
@@ -202,16 +197,18 @@ describe("admin.classUtilisation", () => {
     await makeMembership(db, second.id);
     await callerFor(db, second).bookings.book({ classId: clsOne.id });
 
+    const third = await makeUser(db);
+    await makeMembership(db, third.id);
+    await callerFor(db, third).bookings.book({ classId: clsTwo.id });
+
     const admin = await makeUser(db, { role: "admin" });
+    // Checking someone in must not drop them from the count.
     await callerFor(db, admin).bookings.markAttended({ bookingId: firstBooking.id });
 
     const rows = await callerFor(db, admin).admin.classUtilisation({});
 
-    // Only booking id 1 satisfies `bookings.class_id = bookings.id`, so both
-    // classes report 1 regardless of how many people actually booked them.
-    expect(rows.map((r) => r.booked)).toEqual([1, 1]);
-    expect(rows[0]).toMatchObject({ capacity: 4, utilisation: 0.25 });
-    expect(rows[1]).toMatchObject({ capacity: 8, utilisation: 0.125 });
+    expect(rows[0]).toMatchObject({ capacity: 4, booked: 2, utilisation: 0.5 });
+    expect(rows[1]).toMatchObject({ capacity: 8, booked: 1, utilisation: 0.125 });
   });
 
   it("respects the limit and skips cancelled classes", async () => {
@@ -481,11 +478,12 @@ describe("notifications", () => {
     expect(await callerFor(db, other).notifications.list({})).toHaveLength(0);
   });
 
-  it("broadcasts to every member and to nobody else", async () => {
+  it("broadcasts to active members and to nobody else", async () => {
     const admin = await makeUser(db, { role: "admin" });
     await makeUser(db, { role: "trainer" });
     const first = await makeUser(db);
     const second = await makeUser(db);
+    const deactivated = await makeUser(db, { active: false });
 
     const result = await callerFor(db, admin).notifications.broadcast({
       title: "Studio maintenance",
@@ -496,6 +494,7 @@ describe("notifications", () => {
     expect(await callerFor(db, first).notifications.list({})).toHaveLength(1);
     expect(await callerFor(db, second).notifications.list({})).toHaveLength(1);
     expect(await callerFor(db, admin).notifications.list({})).toHaveLength(0);
+    expect(await callerFor(db, deactivated).notifications.list({})).toHaveLength(0);
   });
 
   it("returns zero when there is nobody to broadcast to", async () => {

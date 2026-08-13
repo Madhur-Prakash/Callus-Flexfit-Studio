@@ -8,6 +8,7 @@ import {
   linkToCompany,
   makeClass,
   makeCompany,
+  makeMembership,
   makeUser,
   schema,
   type TestDb,
@@ -15,8 +16,8 @@ import {
 
 let db: TestDb;
 
-beforeEach(() => {
-  db = createTestDb();
+beforeEach(async () => {
+  db = await createTestDb();
 });
 
 async function corporateMember(companyOverrides: Partial<schema.Company> = {}) {
@@ -176,30 +177,43 @@ describe("corporateBookings.cancel", () => {
     expect(await poolBalance(waiter.company.id)).toBe(28);
   });
 
-  it("promotes but does not debit a pool that cannot cover the class", async () => {
+  it("passes over a company whose pool cannot cover the class", async () => {
     const cls = await makeClass(db, { capacity: 1, creditCost: 10, startsAt: hoursFromNow(48) });
 
     const holder = await corporateMember({ creditPoolBalance: 50 });
     const holderBooking = await holder.caller.corporateBookings.book({ classId: cls.id });
 
-    const waiter = await corporateMember({ creditPoolBalance: 10 });
-    const waiterBooking = await waiter.caller.corporateBookings.book({ classId: cls.id });
+    const broke = await corporateMember({ creditPoolBalance: 10 });
+    const brokeBooking = await broke.caller.corporateBookings.book({ classId: cls.id });
 
-    // Drain the waiting company's pool below the class cost.
+    const solvent = await corporateMember({ creditPoolBalance: 40 });
+    const solventBooking = await solvent.caller.corporateBookings.book({ classId: cls.id });
+
+    // Drain the first waiting company's pool below the class cost.
     await db
       .update(schema.companies)
       .set({ creditPoolBalance: 3 })
-      .where(eq(schema.companies.id, waiter.company.id));
+      .where(eq(schema.companies.id, broke.company.id));
 
     await holder.caller.corporateBookings.cancel({ bookingId: holderBooking.id });
+
+    // Previously this company was promoted and simply not charged, so the
+    // class was handed over free. Now the spot goes to the next in line.
+    const passedOver = await db
+      .select()
+      .from(schema.corporateBookings)
+      .where(eq(schema.corporateBookings.id, brokeBooking.id))
+      .get();
+    expect(passedOver!.status).toBe("waitlisted");
+    expect(await poolBalance(broke.company.id)).toBe(3);
 
     const promoted = await db
       .select()
       .from(schema.corporateBookings)
-      .where(eq(schema.corporateBookings.id, waiterBooking.id))
+      .where(eq(schema.corporateBookings.id, solventBooking.id))
       .get();
     expect(promoted!.status).toBe("booked");
-    expect(await poolBalance(waiter.company.id)).toBe(3);
+    expect(await poolBalance(solvent.company.id)).toBe(30);
   });
 
   it("blocks a stranger and allows staff", async () => {
@@ -222,7 +236,7 @@ describe("corporateBookings.cancel", () => {
 });
 
 describe("corporateBookings.markAttended", () => {
-  it("marks attended and records a check-in that is not linked to the booking row", async () => {
+  it("records the check-in against the corporate booking, keeping its source", async () => {
     const { caller, user } = await corporateMember();
     const cls = await makeClass(db);
     const booking = await caller.corporateBookings.book({ classId: cls.id });
@@ -241,12 +255,35 @@ describe("corporateBookings.markAttended", () => {
     expect(after!.status).toBe("attended");
 
     const checkin = await db.select().from(schema.checkins).get();
-    // Known quirk, preserved: corporate check-ins store no booking link and
-    // ignore the requested source. See documents/FINDINGS.md.
     expect(checkin).toMatchObject({
       userId: user.id,
       bookingId: null,
-      source: "front_desk",
+      corporateBookingId: booking.id,
+      source: "kiosk",
+    });
+  });
+
+  it("counts corporate attendees in the class check-in count", async () => {
+    const cls = await makeClass(db, { capacity: 5 });
+    const admin = await makeUser(db, { role: "admin" });
+
+    const corporate = await corporateMember();
+    const corporateBooking = await corporate.caller.corporateBookings.book({
+      classId: cls.id,
+    });
+
+    const member = await makeUser(db);
+    await makeMembership(db, member.id);
+    const personalBooking = await callerFor(db, member).bookings.book({ classId: cls.id });
+
+    const adminCaller = callerFor(db, admin);
+    await adminCaller.corporateBookings.markAttended({ bookingId: corporateBooking.id });
+    await adminCaller.bookings.markAttended({ bookingId: personalBooking.id });
+
+    // Corporate check-ins used to be invisible here, so a trainer's headcount
+    // was short by however many corporate attendees turned up.
+    expect(await adminCaller.bookings.checkinCountFor({ classId: cls.id })).toEqual({
+      count: 2,
     });
   });
 });

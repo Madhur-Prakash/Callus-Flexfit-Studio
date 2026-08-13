@@ -160,8 +160,18 @@ the API surface is greppable.
 
 ## How I know the behaviour did not change
 
-The brief's hard constraint was that the app behaves exactly as before, and
-nobody hands you a list of what it does. Working that out was most of the job.
+The work came in two deliberate phases:
+
+1. **Restructure, behaviour frozen.** Everything moved; nothing changed.
+2. **Fix the bugs the restructure surfaced**, as a separate step with the tests
+   updated to state the new intent.
+
+This section is about phase one — proving the move was safe. Phase two is
+[documents/FINDINGS.md](FINDINGS.md), which lists every behaviour that changed
+afterwards and why.
+
+Nobody hands you a list of what the app does. Working that out was most of the
+job.
 
 **1. Characterization tests, written first.** 125 tests against the tRPC surface
 pinning credit arithmetic, waitlist ordering, the 12/24/4-hour windows,
@@ -203,6 +213,27 @@ per-route bundles stay at ~126–130 kB.
 What none of this covers: visual rendering. I reproduced every class string and
 inline style by hand and checked them against the originals, but no screenshot
 diff was taken. If you want certainty on pixels, that is the gap.
+
+### And then the fixes
+
+Once the move was proven safe, the bugs it had surfaced were fixed. The tests
+that had pinned each bug were rewritten to assert the intended behaviour, so the
+suite now says what the app *should* do rather than what it happened to do —
+133 tests, all passing.
+
+Two of those fixes are worth flagging here because they are not local:
+
+- **The schema changed.** `checkins` gained a nullable
+  `corporate_booking_id`, so corporate attendance can be recorded at all. It is
+  additive, `pnpm db:push` has been run, and the 96 seeded check-ins survived.
+- **Mutations are transactional now.** Anything that moves credits runs inside
+  `db.transaction()`. This forced a change in the test harness: `db.transaction()`
+  does not work against a `:memory:` libSQL database — the tables disappear when
+  the transaction commits — so each test now gets its own temporary database
+  *file*. That is closer to how the app runs anyway.
+
+Every behaviour that changed, and every one deliberately left alone, is listed
+in [FINDINGS.md](FINDINGS.md).
 
 ---
 

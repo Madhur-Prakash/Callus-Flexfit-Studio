@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { users, memberships, classes, bookings, payments, checkins } from "@/db/schema";
 import { nowIso, todayIso } from "@/lib/datetime";
 import { adminProcedure } from "@/server/trpc/procedures";
@@ -69,6 +69,15 @@ export const dashboardProcedures = {
     };
   }),
 
+  /**
+   * How full each upcoming class is.
+   *
+   * Written as a join and a GROUP BY rather than a correlated subquery. The
+   * subquery version was silently broken: Drizzle only qualifies column names
+   * when the outer query has a join, so `bookings.class_id = classes.id`
+   * compiled to `bookings.class_id = bookings.id`, leaving the subquery
+   * uncorrelated and every class reporting the same number.
+   */
   classUtilisation: adminProcedure
     .input(z.object({ limit: z.number().default(10) }).default({}))
     .query(async ({ ctx, input }) => {
@@ -78,20 +87,21 @@ export const dashboardProcedures = {
           name: classes.name,
           startsAt: classes.startsAt,
           capacity: classes.capacity,
-          // KNOWN BUG, PRESERVED. Because this query has no join, Drizzle emits
-          // the subquery's columns unqualified, so `bookings.class_id =
-          // classes.id` becomes `bookings.class_id = bookings.id` and the
-          // subquery stops being correlated. Every class reports the same
-          // count. Adding a join, or an explicit alias, changes the numbers on
-          // the admin dashboard — see documents/FINDINGS.md.
-          booked: sql<number>`(
-            select count(*) from ${bookings}
-            where ${bookings.classId} = ${classes.id}
-              and ${bookings.status} in ('booked','attended')
-          )`.as("booked"),
+          // Counts attended too — a member who has been checked in still took
+          // up a spot.
+          booked: sql<number>`count(${bookings.id})`,
         })
         .from(classes)
+        .leftJoin(
+          bookings,
+          and(
+            eq(bookings.classId, classes.id),
+            inArray(bookings.status, ["booked", "attended"]),
+          ),
+        )
         .where(eq(classes.cancelled, false))
+        .groupBy(classes.id)
+        .orderBy(classes.id)
         .limit(input.limit);
 
       return rows.map((r) => ({

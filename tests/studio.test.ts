@@ -14,12 +14,12 @@ import {
 
 let db: TestDb;
 
-beforeEach(() => {
-  db = createTestDb();
+beforeEach(async () => {
+  db = await createTestDb();
 });
 
 describe("classes.list", () => {
-  it("computes spotsLeft and full from confirmed bookings only", async () => {
+  it("computes spotsLeft and full from confirmed bookings", async () => {
     const cls = await makeClass(db, { capacity: 2 });
 
     const first = await makeUser(db);
@@ -35,6 +35,22 @@ describe("classes.list", () => {
 
     const [now] = await callerFor(db, null).classes.list({});
     expect(now).toMatchObject({ spotsLeft: 0, full: true, booked: 2 });
+  });
+
+  it("keeps a class full once attendees are checked in", async () => {
+    const cls = await makeClass(db, { capacity: 1 });
+
+    const member = await makeUser(db);
+    await makeMembership(db, member.id);
+    const booking = await callerFor(db, member).bookings.book({ classId: cls.id });
+
+    const admin = await makeUser(db, { role: "admin" });
+    await callerFor(db, admin).bookings.markAttended({ bookingId: booking.id });
+
+    // Counting only 'booked' made the spot look free again the moment the
+    // member walked through the door, letting the class be over-booked.
+    const [listed] = await callerFor(db, null).classes.list({});
+    expect(listed).toMatchObject({ spotsLeft: 0, full: true, booked: 1 });
   });
 
   it("never reports negative spots left", async () => {
@@ -105,7 +121,38 @@ describe("classes.cancel", () => {
     expect(after!.cancelledAt).toBeTruthy();
   });
 
-  it("leaves waitlisted bookings alone", async () => {
+  it("refunds credits even inside the free-cancellation window", async () => {
+    // One hour out, a member cancelling would forfeit their credits. The studio
+    // calling the class off is not the member's fault, so they are made whole.
+    const cls = await makeClass(db, {
+      capacity: 5,
+      creditCost: 3,
+      startsAt: hoursFromNow(1),
+    });
+
+    const member = await makeUser(db);
+    const membership = await makeMembership(db, member.id, { creditsRemaining: 10 });
+    await callerFor(db, member).bookings.book({ classId: cls.id });
+
+    const spent = await db
+      .select()
+      .from(schema.memberships)
+      .where(eq(schema.memberships.id, membership.id))
+      .get();
+    expect(spent!.creditsRemaining).toBe(7);
+
+    const admin = await makeUser(db, { role: "admin" });
+    await callerFor(db, admin).classes.cancel({ id: cls.id });
+
+    const refunded = await db
+      .select()
+      .from(schema.memberships)
+      .where(eq(schema.memberships.id, membership.id))
+      .get();
+    expect(refunded!.creditsRemaining).toBe(10);
+  });
+
+  it("cancels waitlisted bookings too", async () => {
     const cls = await makeClass(db, { capacity: 1 });
 
     const holder = await makeUser(db);
@@ -119,12 +166,75 @@ describe("classes.cancel", () => {
     const admin = await makeUser(db, { role: "admin" });
     await callerFor(db, admin).classes.cancel({ id: cls.id });
 
+    // Leaving these waitlisted left members queuing for a class that would
+    // never run.
     const after = await db
       .select()
       .from(schema.bookings)
       .where(eq(schema.bookings.id, waiting.id))
       .get();
-    expect(after!.status).toBe("waitlisted");
+    expect(after!.status).toBe("cancelled");
+  });
+
+  it("tells everyone affected, once each", async () => {
+    const cls = await makeClass(db, { capacity: 5 });
+
+    const first = await makeUser(db);
+    await makeMembership(db, first.id);
+    await callerFor(db, first).bookings.book({ classId: cls.id });
+
+    const second = await makeUser(db);
+    await makeMembership(db, second.id);
+    await callerFor(db, second).bookings.book({ classId: cls.id });
+
+    const bystander = await makeUser(db);
+
+    const admin = await makeUser(db, { role: "admin" });
+    await callerFor(db, admin).classes.cancel({ id: cls.id });
+
+    for (const member of [first, second]) {
+      const inbox = await callerFor(db, member).notifications.list({});
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].type).toBe("class_cancelled");
+      expect(inbox[0].message).toContain(cls.name);
+    }
+
+    expect(await callerFor(db, bystander).notifications.list({})).toHaveLength(0);
+  });
+
+  it("refunds corporate bookings to the company pool", async () => {
+    const cls = await makeClass(db, { capacity: 5, creditCost: 4 });
+
+    const company = await db
+      .insert(schema.companies)
+      .values({ name: "TestCorp", contactEmail: "hr@testcorp.test", creditPoolBalance: 50 })
+      .returning()
+      .get();
+    const employee = await makeUser(db);
+    await db
+      .insert(schema.companyMembers)
+      .values({ userId: employee.id, companyId: company.id });
+
+    const corporateBooking = await callerFor(db, employee).corporateBookings.book({
+      classId: cls.id,
+    });
+
+    const admin = await makeUser(db, { role: "admin" });
+    await callerFor(db, admin).classes.cancel({ id: cls.id });
+
+    const after = await db
+      .select()
+      .from(schema.corporateBookings)
+      .where(eq(schema.corporateBookings.id, corporateBooking.id))
+      .get();
+    expect(after!.status).toBe("cancelled");
+
+    const pool = await db
+      .select()
+      .from(schema.companies)
+      .where(eq(schema.companies.id, company.id))
+      .get();
+    expect(pool!.creditPoolBalance).toBe(50);
   });
 
   it("is admin-only; trainers may create and update but not cancel", async () => {

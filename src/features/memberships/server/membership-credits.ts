@@ -1,5 +1,5 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { Database } from "@/db/client";
+import type { DbClient } from "@/db/client";
 import { memberships, type Membership } from "@/db/schema";
 import { todayIso } from "@/lib/datetime";
 import { hasUnlimitedCredits, UNLIMITED_CREDITS } from "../credits";
@@ -10,7 +10,7 @@ export { hasUnlimitedCredits, UNLIMITED_CREDITS };
  * The membership a member books against: active, not yet ended, and when there
  * is more than one, the furthest-dated.
  */
-export function findActiveMembership(db: Database, userId: number) {
+export function findActiveMembership(db: DbClient, userId: number) {
   const today = todayIso();
   return db
     .select()
@@ -26,9 +26,37 @@ export function findActiveMembership(db: Database, userId: number) {
     .get();
 }
 
+export function canCover(membership: Membership, amount: number): boolean {
+  return hasUnlimitedCredits(membership.creditsRemaining) ||
+    membership.creditsRemaining >= amount;
+}
+
+/**
+ * The membership behind a booking, but only if it can still pay `amount`.
+ *
+ * Used when promoting off a waitlist, where a member who can no longer afford
+ * the class is passed over rather than being charged what little they have.
+ */
+export async function findChargeableMembership(
+  db: DbClient,
+  membershipId: number | null,
+  amount: number,
+): Promise<Membership | null> {
+  if (membershipId === null) return null;
+
+  const membership = await db
+    .select()
+    .from(memberships)
+    .where(eq(memberships.id, membershipId))
+    .get();
+
+  if (!membership) return null;
+  return canCover(membership, amount) ? membership : null;
+}
+
 /** Takes credits for a spot the member has just been given. */
 export async function chargeCredits(
-  db: Database,
+  db: DbClient,
   membership: Membership,
   amount: number,
 ): Promise<void> {
@@ -47,7 +75,7 @@ export async function chargeCredits(
  * skips unlimited plans so a refund cannot push a 999 balance higher.
  */
 export async function refundCredits(
-  db: Database,
+  db: DbClient,
   membershipId: number,
   amount: number,
 ): Promise<void> {
@@ -62,31 +90,5 @@ export async function refundCredits(
   await db
     .update(memberships)
     .set({ creditsRemaining: membership.creditsRemaining + amount })
-    .where(eq(memberships.id, membership.id));
-}
-
-/**
- * Takes credits from a member being promoted off a waitlist.
- *
- * Unlike a fresh booking this cannot be refused — the spot has already been
- * given — so a balance that cannot cover the class is floored at zero rather
- * than going negative.
- */
-export async function chargeCreditsForPromotion(
-  db: Database,
-  membershipId: number,
-  amount: number,
-): Promise<void> {
-  const membership = await db
-    .select()
-    .from(memberships)
-    .where(eq(memberships.id, membershipId))
-    .get();
-
-  if (!membership || hasUnlimitedCredits(membership.creditsRemaining)) return;
-
-  await db
-    .update(memberships)
-    .set({ creditsRemaining: Math.max(0, membership.creditsRemaining - amount) })
     .where(eq(memberships.id, membership.id));
 }

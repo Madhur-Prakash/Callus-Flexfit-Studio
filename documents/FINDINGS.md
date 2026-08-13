@@ -1,354 +1,301 @@
-# Things that look wrong
+# Bugs found in the existing code
 
-Everything in this file is **still in the code, behaving exactly as it did
-before the restructure.** The brief's hard constraint was that the app behaves
-identically when I'm done, so nothing here was silently fixed. Each entry says
-what is wrong, how to reproduce it, and what the fix would be.
+These were found while working out what the app did. They were first written up
+and left alone, so the restructure could be verified against unchanged
+behaviour; they have since been fixed as a separate, deliberate step.
 
-Confirmed items are marked ✔ where I demonstrated them with a test or a query.
-Ordered by how much I'd want to fix them.
+Each entry says what was wrong, how it showed up, and what changed. **The
+"Behaviour change" lines are the ones to read** — several of these alter numbers
+on screen or where money goes, which is exactly why they were a decision rather
+than part of a silent cleanup.
+
+Anything still open is in [Left alone](#left-alone) at the bottom, with reasons.
 
 ---
 
-## 1. ✔ Class utilisation on the admin dashboard is wrong
+## 1. Class utilisation on the admin dashboard was wrong ✔ fixed
 
-**Where:** `src/features/back-office/server/dashboard-stats.ts`, `classUtilisation`
+**Where:** `back-office/server/dashboard-stats.ts`, `classUtilisation`
 
-The `booked` count is written as a correlated subquery:
+The `booked` count was a correlated subquery:
 
 ```ts
-booked: sql<number>`(
-  select count(*) from ${bookings}
-  where ${bookings.classId} = ${classes.id}
-    and ${bookings.status} in ('booked','attended')
-)`.as("booked"),
+booked: sql`(select count(*) from ${bookings}
+             where ${bookings.classId} = ${classes.id} …)`
 ```
 
 Drizzle only qualifies column names when the outer query has a join. This query
-has none, so it emits:
+had none, so it emitted:
 
 ```sql
-select count(*) from "bookings" where "class_id" = "id" and "status" in (...)
+select count(*) from "bookings" where "class_id" = "id" …
 ```
 
-Inside the subquery both names resolve to `bookings`. The intended
-`bookings.class_id = classes.id` becomes `bookings.class_id = bookings.id`, the
-subquery stops being correlated, and **every class on the dashboard reports the
-same number** — the count of bookings whose row id happens to equal their own
-class id.
+Inside the subquery both names resolve to `bookings`, so
+`bookings.class_id = classes.id` became `bookings.class_id = bookings.id`. The
+subquery stopped being correlated and **every class reported the same number** —
+the count of bookings whose row id happened to equal their own class id.
 
-**Reproduce:** two members book the same class; the dashboard shows `1`.
-Pinned in `tests/back-office.test.ts` ("reports the same uncorrelated count for
-every class"), which asserts two different classes both report `1`.
+It went unnoticed because the number was plausible, and because `classes.list`
+has the same subquery but *does* have a `leftJoin`, so the public schedule was
+right and only the admin view was wrong.
 
-Why it went unnoticed: the number is plausible, and `classes.list` contains the
-same subquery but *does* have a `leftJoin`, so the public schedule is correct.
-Only the admin view is wrong.
+**Fixed by** rewriting it as a `leftJoin` + `GROUP BY` instead of a raw
+subquery, which removes the trap rather than working around it. Against the
+seeded database the dashboard now reads `0/14  4/20  8/18  0/12  17/20 …`
+where it previously showed the same figure for every row, and each figure
+cross-checks against that class's roster.
 
-**Fix:** give the subquery an explicit alias so the correlation survives.
+`classes.list` still uses the subquery form and is correct, but only because of
+its join. That is now spelled out in a comment so nobody removes the join.
 
-```ts
-import { alias } from "drizzle-orm/sqlite-core";
-const b = alias(bookings, "b");
-// select count(*) from b where b.class_id = classes.id and b.status in (...)
-```
-
-Adding any join to the outer query also fixes it, but by accident — don't rely
-on that. **This changes the numbers on the admin dashboard**, which is why it is
-a separate decision rather than part of a "no behaviour change" refactor.
+**Behaviour change:** utilisation percentages on `/admin` change, to correct
+values.
 
 ---
 
-## 2. ✔ Corporate check-ins lose their source and their booking link
+## 2. Corporate check-ins lost their source and their booking link ✔ fixed
 
-**Where:** `src/features/corporate/server/corporate-bookings.router.ts`, `markAttended`
+**Where:** `corporate/server/corporate-bookings.router.ts`, `markAttended`
 
 ```ts
-.input(z.object({ bookingId: z.number(), source: z.enum([...]).default("front_desk") }))
-// …
+.input(z.object({ …, source: z.enum([...]).default("front_desk") }))
 await ctx.db.insert(checkins).values({
   userId: booking.userId,
-  bookingId: null,          // corporate ids can't go here
-});                          // input.source silently dropped
+  bookingId: null,     // corporate ids can't go here
+});                     // input.source silently dropped
 ```
 
-`checkins.booking_id` is a foreign key onto the **personal** `bookings` table, so
-a corporate booking id cannot be stored in it. Two consequences:
+`checkins.booking_id` is a foreign key onto the **personal** `bookings` table,
+so a corporate booking id could not be stored in it. Every corporate check-in
+recorded as `front_desk` regardless of where it happened, and because
+`checkinCountFor` inner-joined `checkins` to `bookings`, corporate attendees
+never appeared in the headcount a trainer sees.
 
-- Every corporate check-in is recorded as `front_desk`, even from the kiosk. The
-  `source` argument is accepted and ignored.
-- `bookings.checkinCountFor` inner-joins `checkins` to `bookings`, so corporate
-  attendees never appear in the "checked in" count a trainer sees.
+**Fixed by** adding a nullable `checkins.corporate_booking_id` column pointing
+at `corporate_bookings`, writing the real source, and rewriting
+`checkinCountFor` to count both kinds. This is the one change that touches the
+schema; it is additive, existing rows keep their data, and `pnpm db:push` has
+been run (96 seeded check-ins survived).
 
-Pinned in `tests/corporate.test.ts`.
-
-**Fix:** the honest one is a schema change — either a nullable
-`corporate_booking_id` column alongside the existing one, or collapsing the two
-booking tables into one with a nullable `company_id`. The one-line half-fix
-(passing `source: input.source` through) is worth doing regardless; it is
-strictly an improvement and loses nothing.
+**Behaviour change:** trainers' check-in counts go up where corporate members
+attended — they were previously undercounted.
 
 ---
 
-## 3. ✔ A stray "0" next to the notification bell
+## 3. Cancelling a class took members' credits with it ✔ fixed
 
-**Where:** `src/components/layout/nav-bar.tsx`
+**Where:** `classes/server/classes.router.ts`, `cancel`
 
-```tsx
-{unreadCount && unreadCount > 0 && ( <span …>{…}</span> )}
-```
+Cancelling a class set every confirmed booking to `cancelled` and refunded
+nothing. A member who paid two credits for a class the *studio* then called off
+was simply out two credits — the studio cancelling was treated worse than the
+member cancelling, which refunds outside the 12-hour window. Waitlisted members
+were left queuing for a class that would never run, and corporate bookings were
+not touched at all: they stayed `booked` against a cancelled class, with the
+employer's credits still spent.
 
-When `unreadCount` is `0`, the expression short-circuits to the *number* `0`,
-and React renders numbers. Any signed-in user with no unread notifications sees
-`🔔0`. When it's `undefined` (still loading) the expression yields `undefined`
-and renders nothing, which is why it looks fine on first paint and appears a
-moment later.
+**Fixed:** cancellation now refunds unconditionally — the member did nothing
+wrong, so the 12-hour rule does not apply — cancels waitlisted rows too, and
+cancels corporate bookings, returning their credits to the employer's pool. All
+of it in one transaction.
 
-I rewrote this component and had to deliberately put the bug back — the comment
-in the source says so.
-
-**Fix:** `{unreadCount ? <span…/> : null}`, or `{!!unreadCount && …}`.
+**Behaviour change:** members and companies get credits back when the studio
+cancels a class. Money moves that previously did not.
 
 ---
 
-## 4. Cancelling a class takes members' credits with it
+## 4. Three of the four notification types were never sent ✔ two fixed, one open
 
-**Where:** `src/features/classes/server/classes.router.ts`, `cancel`
+**Where:** `db/schema/notifications.ts` vs. the rest of the app
 
-When an admin cancels a class, every confirmed booking is set to `cancelled` —
-and no credits are given back:
+The schema declared `waitlist_promotion`, `class_cancelled`,
+`membership_expiring` and `announcement`. Only `announcement` was ever produced
+by running code — the seed file contained examples of all four, which made the
+feature look finished. A member promoted off a waitlist was never told; nor was
+one whose class had been cancelled.
+
+**Fixed:** a small `notifications/server/notify.ts` service, called from the two
+places where those events actually happen. Notifications are raised after the
+transaction that did the real work, so failing to tell someone can never undo
+the thing they are being told about.
+
+`membership_expiring` is **still not sent** — it needs something to run on a
+schedule, and there is no scheduler in this app. `admin.expiringMemberships`
+already finds the right people, so this is a cron job away.
+
+---
+
+## 5. Waitlist promotion could overdraw a member ✔ fixed
+
+**Where:** `memberships/server/membership-credits.ts`, `bookings/server/waitlist.ts`
+
+Promotion charged `Math.max(0, balance - cost)`, so a member with one credit
+promoted into a three-credit class was charged one credit and given the class,
+silently. The corporate path handled the same situation differently again: if
+the pool could not cover the class, the promotion went ahead and **nothing** was
+charged, so the employer got the class free.
+
+Two paths, two different accidental answers.
+
+**Fixed** with one rule for both: promote the longest-waiting member *who can
+still pay*, and pass over anyone who cannot. Someone without the credits could
+not book the class through the front door either, so handing them the spot and
+taking whatever is left in their balance is worse than moving to the next
+person. If nobody in the queue can pay, the spot stays open. `Math.max(0, …)`
+is gone.
+
+**Behaviour change:** a member or company that cannot afford the class is now
+skipped rather than promoted.
+
+---
+
+## 6. The kiosk turned away members who had already paid ✔ fixed
+
+**Where:** `app/kiosk/page.tsx`
 
 ```ts
-await ctx.db.update(bookings)
-  .set({ status: "cancelled", cancelledAt: nowIso() })
-  .where(and(eq(bookings.classId, input.id), eq(bookings.status, "booked")));
-```
-
-A member who paid two credits for a class the studio then cancelled is simply
-out two credits. Compare `bookings.cancel`, which refunds when the member
-cancels more than 12 hours out — the studio cancelling is treated *worse* than
-the member cancelling.
-
-Corporate bookings on the same class aren't touched at all: they stay `booked`
-against a class that will never run.
-
-**Fix:** refund unconditionally on studio-initiated cancellation (the member did
-nothing wrong), and cancel the corporate bookings too, returning their credits
-to the pool. Both need `documents/` sign-off first because it moves money.
-
----
-
-## 5. Three of the four notification types are never sent
-
-**Where:** `src/db/schema/notifications.ts` vs. the rest of the app
-
-The schema declares `waitlist_promotion`, `class_cancelled`,
-`membership_expiring` and `announcement`. Grepping for `insert(notifications)`
-across `src/` finds exactly two sites: the seed file, and
-`notifications.broadcast`. Only `announcement` is ever produced by running code.
-
-So: a member promoted off a waitlist is never told. A member whose class was
-cancelled is never told. A member whose membership expires in three days is
-never told — even though `admin.expiringMemberships` exists to find them. The
-seed data contains examples of all four types, which makes the feature look
-finished when it isn't.
-
-**Fix:** emit a notification at each of the three sites — waitlist promotion in
-`promoteFromWaitlist`, class cancellation in `classes.cancel`, and expiry from a
-scheduled job. The first two are a few lines each now that promotion is a single
-function.
-
----
-
-## 6. The kiosk blocks check-in for members who have already paid
-
-**Where:** `src/app/kiosk/page.tsx`
-
-```ts
-const hasNoCredits = latestMembership?.creditsRemaining === 0;
-// …
 disabled={markAttended.isPending || isMembershipExpired || hasNoCredits}
 ```
 
-Checking in doesn't cost credits — the credit was spent when the class was
-booked. A member on a 10-credit pack who has booked all ten classes has a
-balance of 0 and is refused entry at the desk for classes they have already
-paid for.
+Checking in costs nothing — the credit is spent at booking time. A member on a
+10-credit pack who had booked all ten classes had a balance of 0 and was refused
+entry at the desk for classes they had already paid for. Likewise a member whose
+membership lapsed after they booked.
 
-Same for `isMembershipExpired`: a member whose membership lapsed yesterday but
-who booked a class last week is turned away.
-
-**Fix:** show the warnings (they're useful context for the desk) but don't
-disable the button. The booking is the proof of payment.
+**Fixed:** the warnings stay (they are useful context for the front desk) but no
+longer disable the button. The booking is the proof of payment.
 
 ---
 
-## 7. Attendance frees up spots on the public schedule
+## 7. Attendance freed up spots on the public schedule ✔ fixed
 
-**Where:** `classes.router.ts` `list` vs `dashboard-stats.ts` `classUtilisation`
+`classes.list` counted `status = 'booked'` while `classUtilisation` counted
+`'booked'` and `'attended'`. Once the desk marked someone attended they dropped
+out of the schedule's count, `spotsLeft` went up, and a full class could be
+over-booked as people arrived.
 
-The two count differently:
+**Fixed:** both count `('booked','attended')`, as does the capacity check used
+when booking.
 
-- `classes.list` counts `status = 'booked'` → drives `spotsLeft` and `full`
-- `classUtilisation` counts `status IN ('booked','attended')`
-
-Once the front desk marks someone attended, they drop out of the schedule's
-count, `spotsLeft` goes up, and the class can be over-booked. For a class that
-has already started this is mostly harmless; for a class being checked in early
-it isn't.
-
-**Fix:** count `('booked','attended')` in both. Note this interacts with #1 —
-fix them together.
+**Behaviour change:** classes stay full once attendees are checked in.
 
 ---
 
-## 8. Booking is not atomic, and capacity is racy
+## 8. Booking was not atomic ✔ fixed (races partly)
 
-**Where:** `bookings.router.ts` `book` / `cancel`, and the corporate equivalents
+Booking and cancelling were each several independent writes with no transaction:
+insert a booking, then debit credits; or cancel, refund, promote, charge. A
+failure in between left a class that cost nothing, or credits that vanished.
 
-Each of these is several independent writes with no transaction:
+**Fixed:** every mutation that moves money runs inside `db.transaction()`.
 
-```
-insert booking → update membership credits          (book)
-update booking → refund credits → promote → charge  (cancel)
-```
+The capacity check is still `count(*)` followed by `insert` — now inside a
+transaction, which narrows the window but does not close it under SQLite's
+default isolation. For a single-site gym this is unlikely rather than
+impossible; closing it properly wants a unique constraint or serialised writes.
 
-A failure between them leaves a booked class that cost nothing, or a cancelled
-booking whose credits vanished. libSQL supports transactions; Drizzle exposes
-`db.transaction()`.
-
-Separately, capacity is checked with a `count(*)` and then an `insert`, with no
-lock and no unique constraint. Two concurrent requests for the last spot both
-see room and both get it. For a single-site gym on SQLite this is unlikely
-rather than impossible.
-
-**Fix:** wrap each mutation in `db.transaction()`. For capacity, either
-`SELECT … FOR UPDATE`-style serialisation or re-check inside the transaction.
+> Worth knowing if you touch the tests: `db.transaction()` does not work against
+> a `:memory:` libSQL database — the tables are gone once the transaction
+> commits. The test harness gives each test its own temporary database *file*
+> for that reason, which also matches how the app really runs.
 
 ---
 
-## 9. Announcements go to deactivated members
+## 9. Announcements went to deactivated members ✔ fixed
 
-**Where:** `notifications.router.ts`, `broadcast`
+`broadcast` named its variable `activeMembers` and then filtered only on role,
+so closed accounts received every announcement and were counted in the "sent to
+N members" figure. Now filtered on `active` as well.
 
-The original named the variable `activeMembers` and then didn't filter on
-`active`:
-
-```ts
-const recipients = await ctx.db.select({ id: users.id })
-  .from(users).where(eq(users.role, "member"));   // no active check
-```
-
-Deactivated accounts still receive every announcement, and the count reported
-back to the admin ("sent to 12 members") includes them. I kept the behaviour and
-renamed the variable to `recipients` so the name stops lying.
-
-**Fix:** `and(eq(users.role, "member"), eq(users.active, true))`.
+**Behaviour change:** the reported recipient count drops where deactivated
+members exist.
 
 ---
 
-## 10. Waitlist promotion can overdraw a member
+## 10. Waitlist positions could tie ✔ fixed
 
-**Where:** `membership-credits.ts`, `chargeCreditsForPromotion`
+Queue position counted rows with a strictly earlier `bookedAt`. That column
+defaults to SQLite's `CURRENT_TIMESTAMP`, which resolves to the second, so two
+people joining within the same second were shown the same position, and the
+promotion order between them was undefined.
 
-```ts
-creditsRemaining: Math.max(0, membership.creditsRemaining - amount)
+**Fixed:** both the displayed position and the promotion order now rank on
+`(bookedAt, id)`.
+
+---
+
+## 11. The schedule page refetched `classes.list` for ever ✔ fixed
+
+**Where:** `app/schedule/page.tsx` and `reschedules/ui/reschedule-modal.tsx`
+
+```tsx
+trpc.classes.list.useQuery({ from: new Date().toISOString() })
 ```
 
-A member with one credit promoted into a three-credit class is charged one
-credit and gets the class. Nothing flags it. The promotion also doesn't check
-that their membership is still active — an expired member can be promoted into a
-class they can no longer book.
+The timestamp is built during render, so it differs every time. React Query
+keys its cache on the input, so each render produced a brand-new query with no
+cached data, fetched, re-rendered with the result, produced another new key, and
+fetched again — a loop that never settles. Opening `/schedule` sent a continuous
+stream of requests for as long as the tab was open, one every ~30ms:
 
-The corporate path handles the same situation differently: if the pool can't
-cover the class, the promotion stands and **nothing** is charged
-(`chargePoolForPromotion` returns early). So the same event costs a member
-partial credits and a company nothing.
+```
+GET /api/trpc/classes.list?…"from":"2026-08-13T20:55:52.886Z" 200 in 22ms
+GET /api/trpc/classes.list?…"from":"2026-08-13T20:55:52.915Z" 200 in 23ms
+GET /api/trpc/classes.list?…"from":"2026-08-13T20:55:52.948Z" 200 in 25ms
+```
 
-This is arguably a policy question rather than a bug, but the two paths should
-agree, and right now the choice looks accidental rather than decided.
+Note the `from` value creeping forward by milliseconds — that is the tell.
 
-**Fix:** decide the policy — skip to the next eligible person, or promote and
-let the balance go negative as a debt — and apply it to both paths.
-
----
-
-## 11. Waitlist queue positions can tie
-
-**Where:** `bookings.router.ts`, `waitlisted`
-
-Position is computed by counting rows with a strictly earlier `bookedAt`.
-`bookedAt` defaults to SQLite's `CURRENT_TIMESTAMP`, which has one-second
-resolution, so two people joining the same waitlist within a second both get the
-same position. The tie-break in `findNextWaitlisted` (`order by bookedAt`) is
-likewise undefined between them.
-
-Also worth noting: `bookedAt` is written by SQLite as `YYYY-MM-DD HH:MM:SS`,
-while `cancelledAt` is written by the application as a JavaScript ISO string
-(`YYYY-MM-DDTHH:MM:SS.sssZ`). Two formats, same table, and the two sort
-differently as text.
-
-**Fix:** order and rank by `(bookedAt, id)`. Longer term, write all timestamps
-from one place in one format.
+**Fixed** with `useNowIso()` (`lib/hooks/use-now-iso.ts`), which freezes the
+value for the lifetime of the mount. These screens ask "what is on from now
+onwards"; the answer does not need to change on every render, and React Query's
+own invalidation already refreshes the list after a booking.
 
 ---
 
-## 12. Trainer availability assumes the studio is on UTC
+## 12. Smaller fixes
 
-**Where:** `src/features/trainers/server/availability.ts`
-
-Availability is stored as a weekday plus `HH:MM` strings with no timezone, and
-compared against the **UTC** components of the class start time. For a studio in
-IST (+5:30), a trainer who sets "06:00–12:00" is being matched against UTC
-hours, so the window is effectively 11:30–17:30 local.
-
-The seed data hides this: seeded classes are generated at UTC hours too, so
-everything lines up.
-
-I moved this logic into its own module with the assumption written down rather
-than changing it — fixing it shifts which classes a trainer is available for.
-
-**Fix:** store an IANA timezone for the studio and convert, or store
-availability as UTC offsets explicitly.
+- **`.btn-sm`, `.btn-danger`, `.btn-outline` did not exist.** Used 8, 1 and 4
+  times, defined neither in `globals.css` nor by Tailwind, so those buttons
+  rendered unstyled. Now defined. *(Visual change — those buttons look
+  different, which is to say they now look like buttons.)*
+- **`--bg-secondary` and `--fg` were never declared**, so every rule using them
+  was dropped and the kiosk and trainer inputs fell back to browser defaults.
+  Now declared in `globals.css`.
+- **A stray `0` next to the notification bell.** `{count && count > 0 && …}`
+  evaluates to the number `0` when the count is zero, and React renders numbers.
+  Every user with nothing unread saw `🔔0`. Now a ternary.
+- **`checkAvailability` loaded every class a trainer had ever taught** to check
+  one slot, then filtered in JavaScript. Now scoped to the relevant day.
+- **Sessions accumulated forever.** Nothing ever deleted them. Login now clears
+  that user's expired rows.
+- **`reschedules.reschedule` read a membership row it never used.** Removed.
 
 ---
 
-## 13. Smaller things
+## Left alone
 
-- **`checkAvailability` loads every class a trainer has ever taught** to check
-  one time slot, then filters in JS. Add a date range to the query.
-- **Sessions accumulate.** Every login inserts a new row; nothing deletes
-  expired ones and logging in elsewhere doesn't invalidate old sessions.
+Deliberately not changed, with reasons.
+
 - **`lookupByEmailOrPhone` matches on `LIKE %term%` and returns the first row.**
-  Searching `9` at the front desk returns an arbitrary member. It should be an
-  exact match, or return a list.
-- **`payments.refund` cancels the membership but leaves its credits and any
-  bookings made with them intact.** A refunded member keeps their booked classes.
-- **`.btn-sm`, `.btn-danger` and `.btn-outline` don't exist.** They're used 8, 1
-  and 4 times respectively and are defined neither in `globals.css` nor by
-  Tailwind, so those buttons silently render unstyled or as plain text. Defining
-  them is a visual change, so it's flagged, not done.
-- **`--bg-secondary` and `--fg` are never defined.** Every declaration using
-  them is dropped by the browser. Centralised into `components/ui/tokens.ts`
-  with a comment, so defining them later is a one-line change.
+  Searching `9` at the front desk returns an arbitrary member. The obvious fix
+  is an exact match — but partial phone search is what makes the kiosk usable,
+  and the UI expects exactly one member. Fixing this properly means returning a
+  list and having the desk choose, which is a UI change, not a bug fix.
+- **Trainer availability assumes the studio runs on UTC.** Availability is
+  stored as a weekday plus `HH:MM` with no timezone and compared against UTC
+  components of the class start. For a studio in IST a trainer who sets
+  06:00–12:00 is really being matched against 11:30–17:30 local. The seed data
+  hides it because seeded classes are generated at UTC hours too. Fixing it
+  needs a studio timezone to exist as a concept first; the assumption is now
+  written down in `trainers/server/availability.ts`.
+- **`payments.refund` cancels the membership but leaves its bookings.** A
+  refunded member keeps classes they already booked. Arguably correct, arguably
+  not — it is a policy call for whoever runs the studio.
 - **`auth.register` works but nothing links to it.** There is no sign-up page.
-- **`reschedules.reschedule` fetched a membership row it never used.** Removed —
-  a discarded read has no observable effect.
-- **`reschedules.history` joins `classes` *and* runs correlated subqueries** for
-  the same data. It works, but `fromClassName` comes from the join while
-  `fromClassTime` comes from a subquery, which is confusing to read.
-
----
-
-## What I changed vs. what I only wrote down
-
-**Changed** (no behavioural effect, verified by the test suite):
-
-- Removed the unused membership read in `reschedule`.
-- Renamed `activeMembers` → `recipients` so the name matches what it holds.
-- Reordered `useUtils()` above its use in the notifications page — it worked via
-  closure timing, but read as a use-before-declaration.
-
-**Everything else above is untouched.** Each site that needs it carries a
-comment pointing here, so the next person meets the decision before they meet
-the surprise.
+  That is a missing feature, not a defect.
+- **Mixed timestamp formats.** `bookedAt` is written by SQLite as
+  `YYYY-MM-DD HH:MM:SS`; `cancelledAt` by the app as an ISO string. They sort
+  differently as text. Normalising means a data migration, and the ordering
+  problem it caused has been fixed at the query level instead.

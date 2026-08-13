@@ -23,3 +23,15 @@ export { schema };
  * call site) is what lets services be called with a test database.
  */
 export type Database = typeof db;
+
+/** The handle inside `db.transaction(async (tx) => …)`. */
+export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/**
+ * Either a plain connection or an open transaction.
+ *
+ * Services take this so a caller can compose several of them into one atomic
+ * unit — booking a class writes a booking row and debits credits, and those
+ * two writes must not be able to come apart.
+ */
+export type DbClient = Database | Transaction;

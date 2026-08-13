@@ -104,19 +104,18 @@ function NotificationBell({ unreadCount }: { unreadCount: number | undefined }) 
     <Link href="/notifications" className="relative">
       <span className="text-sm">🔔</span>
       {/*
-        Written with `&&` rather than a ternary on purpose. When the count is 0
-        this expression evaluates to the number 0, which React renders as a
-        stray "0" beside the bell. That is what the app does today, so it is
-        left alone — see documents/FINDINGS.md.
+        Ternary, not `&&`. With `&&` a count of 0 makes the expression evaluate
+        to the number 0, which React renders — putting a stray "0" next to the
+        bell for every user with nothing unread.
       */}
-      {unreadCount && unreadCount > 0 && (
+      {unreadCount ? (
         <span
           className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold"
           style={{ backgroundColor: "var(--accent)" }}
         >
           {unreadCount > 9 ? "9+" : unreadCount}
         </span>
-      )}
+      ) : null}
     </Link>
   );
 }

@@ -3,13 +3,14 @@
 import { InlineAlert, LoadingMessage, PageHeader } from "@/components/ui";
 import { ClassRow } from "@/features/classes/ui/class-row";
 import { useCurrentUser } from "@/lib/hooks/use-current-user";
+import { useNowIso } from "@/lib/hooks/use-now-iso";
 import { trpc } from "@/lib/trpc/client";
 
 export default function SchedulePage() {
   const utils = trpc.useUtils();
   const { user } = useCurrentUser();
   const { data: classes, isLoading } = trpc.classes.list.useQuery({
-    from: new Date().toISOString(),
+    from: useNowIso(),
   });
 
   const book = trpc.bookings.book.useMutation({

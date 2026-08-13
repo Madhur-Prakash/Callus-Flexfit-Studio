@@ -1,26 +1,48 @@
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { TRPCError } from "@trpc/server";
-import { expect } from "vitest";
+import { afterEach, expect } from "vitest";
 import { appRouter, hashPassword, schema } from "./app";
-import { DDL_FILE } from "./global-setup";
+import { DB_DIR, DDL_FILE } from "./global-setup";
 
 export { schema };
 
-export type TestDb = ReturnType<typeof createTestDb>;
+export type TestDb = Awaited<ReturnType<typeof createTestDb>>;
 export type Role = "member" | "trainer" | "admin";
 
-/** A fresh, empty, in-memory studio. */
-export function createTestDb() {
-  const client = createClient({ url: ":memory:" });
+const openClients: Array<ReturnType<typeof createClient>> = [];
+
+// Freeing the file handles so the temp directory can be removed afterwards.
+afterEach(() => {
+  while (openClients.length) openClients.pop()?.close();
+});
+
+/**
+ * A fresh, empty studio in its own throwaway database file.
+ *
+ * Deliberately a file rather than `:memory:`. Under @libsql/client a local
+ * in-memory database does not survive `db.transaction()` — the tables are gone
+ * once the transaction commits — and the booking mutations are transactional.
+ * A file also matches how the app actually runs.
+ */
+export async function createTestDb() {
+  // randomUUID, not a counter: test files run in parallel worker threads that
+  // share a pid, so anything derived from the process would collide and two
+  // workers would fight over the same file.
+  const file = join(DB_DIR, `test-${randomUUID()}.db`);
+
+  const client = createClient({ url: `file:${file}` });
+  openClients.push(client);
+
   const db = drizzle(client, { schema });
 
+  // One call, awaited. The statements are already `;`-terminated, so the
+  // breakpoint markers just come out.
   const ddl = readFileSync(DDL_FILE, "utf8");
-  for (const statement of ddl.split("--> statement-breakpoint")) {
-    const trimmed = statement.trim();
-    if (trimmed) client.executeMultiple(trimmed);
-  }
+  await client.executeMultiple(ddl.replaceAll("--> statement-breakpoint", ""));
 
   return db;
 }

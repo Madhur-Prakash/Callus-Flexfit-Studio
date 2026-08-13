@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { eq, and, gte } from "drizzle-orm";
+import { eq, and, gte, lte } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { classes, trainerAvailability } from "@/db/schema";
 import { nowIso } from "@/lib/datetime";
@@ -144,6 +144,13 @@ export const trainersRouter = router({
         return { available: false, reason: "Outside availability hours" };
       }
 
+      // Only classes that could possibly overlap the slot. This used to load
+      // every class the trainer had ever taught and filter in JavaScript.
+      const dayStart = new Date(slot.startsAt);
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayEnd = new Date(slot.endsAt);
+      dayEnd.setUTCHours(23, 59, 59, 999);
+
       const trainerClasses = await ctx.db
         .select()
         .from(classes)
@@ -151,6 +158,8 @@ export const trainersRouter = router({
           and(
             eq(classes.trainerId, input.trainerId),
             eq(classes.cancelled, false),
+            gte(classes.startsAt, dayStart.toISOString()),
+            lte(classes.startsAt, dayEnd.toISOString()),
           ),
         );
 

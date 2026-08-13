@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { users, sessions } from "@/db/schema";
+import { nowIso } from "@/lib/datetime";
 import { verifyPassword, hashPassword } from "@/lib/password";
 import { router, publicProcedure, protectedProcedure } from "@/server/trpc/procedures";
 import { SESSION_COOKIE } from "@/server/trpc/context";
@@ -43,6 +44,15 @@ export const authRouter = router({
       const token = randomBytes(32).toString("hex");
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + SESSION_DAYS);
+
+      // Nothing else ever removes these, so they accumulate for the life of the
+      // database. Clearing this user's expired rows on the way in keeps the
+      // table bounded without needing a scheduled job.
+      await ctx.db
+        .delete(sessions)
+        .where(
+          and(eq(sessions.userId, user.id), lt(sessions.expiresAt, nowIso())),
+        );
 
       await ctx.db.insert(sessions).values({
         userId: user.id,

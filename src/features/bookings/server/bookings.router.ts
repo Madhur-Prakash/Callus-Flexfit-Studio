@@ -1,17 +1,17 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, sql } from "drizzle-orm";
-import type { Database } from "@/db/client";
-import { bookings, checkins, classes, users } from "@/db/schema";
+import { and, asc, eq, isNotNull, or, sql } from "drizzle-orm";
+import type { DbClient } from "@/db/client";
+import { bookings, checkins, classes, corporateBookings, users } from "@/db/schema";
 import { hoursFromNowIso, nowIso } from "@/lib/datetime";
 import { isStaff } from "@/lib/roles";
 import {
+  canCover,
   chargeCredits,
-  chargeCreditsForPromotion,
   findActiveMembership,
-  hasUnlimitedCredits,
   refundCredits,
 } from "@/features/memberships/server/membership-credits";
+import { notifyWaitlistPromotion } from "@/features/notifications/server/notify";
 import { router, protectedProcedure, staffProcedure } from "@/server/trpc/procedures";
 import {
   assertCanActOnBooking,
@@ -19,11 +19,8 @@ import {
   FREE_CANCELLATION_HOURS,
   isRefundableCancellation,
 } from "./booking-policy";
-import {
-  countConfirmedBookings,
-  findActiveBooking,
-  findNextWaitlisted,
-} from "./booking-repository";
+import { countConfirmedBookings, findActiveBooking } from "./booking-repository";
+import { promoteFromWaitlist } from "./waitlist";
 
 export { FREE_CANCELLATION_HOURS };
 
@@ -84,38 +81,36 @@ export const bookingsRouter = router({
         });
       }
 
-      // An unlimited plan can always afford the class, so the balance check
-      // only applies to credit packs.
-      if (
-        !hasUnlimitedCredits(membership.creditsRemaining) &&
-        membership.creditsRemaining < cls.creditCost
-      ) {
+      if (!canCover(membership, cls.creditCost)) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Not enough class credits remaining.",
         });
       }
 
-      const isFull = (await countConfirmedBookings(ctx.db, cls.id)) >= cls.capacity;
+      // Taking the spot and paying for it are one unit of work.
+      return ctx.db.transaction(async (tx) => {
+        const isFull = (await countConfirmedBookings(tx, cls.id)) >= cls.capacity;
 
-      const created = await ctx.db
-        .insert(bookings)
-        .values({
-          classId: cls.id,
-          userId: ctx.user.id,
-          membershipId: membership.id,
-          status: isFull ? "waitlisted" : "booked",
-          creditsUsed: isFull ? 0 : cls.creditCost,
-        })
-        .returning()
-        .get();
+        const created = await tx
+          .insert(bookings)
+          .values({
+            classId: cls.id,
+            userId: ctx.user.id,
+            membershipId: membership.id,
+            status: isFull ? "waitlisted" : "booked",
+            creditsUsed: isFull ? 0 : cls.creditCost,
+          })
+          .returning()
+          .get();
 
-      // Waitlisted members are charged when they are promoted, not now.
-      if (!isFull) {
-        await chargeCredits(ctx.db, membership, cls.creditCost);
-      }
+        // Waitlisted members are charged when they are promoted, not now.
+        if (!isFull) {
+          await chargeCredits(tx, membership, cls.creditCost);
+        }
 
-      return created;
+        return created;
+      });
     }),
 
   cancel: protectedProcedure
@@ -140,19 +135,25 @@ export const bookingsRouter = router({
         FREE_CANCELLATION_HOURS,
       );
 
-      await ctx.db
-        .update(bookings)
-        .set({ status: "cancelled", cancelledAt: nowIso() })
-        .where(eq(bookings.id, row.booking.id));
+      const promoted = await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(bookings)
+          .set({ status: "cancelled", cancelledAt: nowIso() })
+          .where(eq(bookings.id, row.booking.id));
 
-      if (refundable && row.booking.membershipId) {
-        await refundCredits(ctx.db, row.booking.membershipId, row.booking.creditsUsed);
-      }
+        if (refundable && row.booking.membershipId) {
+          await refundCredits(tx, row.booking.membershipId, row.booking.creditsUsed);
+        }
 
-      // Freeing a confirmed spot promotes the member who has waited longest.
-      // Giving up a waitlist place frees nothing, so nobody moves.
-      if (row.booking.status === "booked") {
-        await promoteFromWaitlist(ctx.db, row.cls);
+        // Freeing a confirmed spot promotes whoever has waited longest and can
+        // still pay. Giving up a waitlist place frees nothing, so nobody moves.
+        return row.booking.status === "booked"
+          ? promoteFromWaitlist(tx, row.cls)
+          : null;
+      });
+
+      if (promoted) {
+        await notifyWaitlistPromotion(ctx.db, promoted.userId, row.cls);
       }
 
       return { ok: true, refunded: refundable };
@@ -182,15 +183,17 @@ export const bookingsRouter = router({
         });
       }
 
-      await ctx.db
-        .update(bookings)
-        .set({ status: "attended" })
-        .where(eq(bookings.id, booking.id));
+      await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(bookings)
+          .set({ status: "attended" })
+          .where(eq(bookings.id, booking.id));
 
-      await ctx.db.insert(checkins).values({
-        userId: booking.userId,
-        bookingId: booking.id,
-        source: input.source,
+        await tx.insert(checkins).values({
+          userId: booking.userId,
+          bookingId: booking.id,
+          source: input.source,
+        });
       });
 
       return { ok: true };
@@ -248,14 +251,32 @@ export const bookingsRouter = router({
         .orderBy(classes.startsAt);
     }),
 
+  /**
+   * Everyone who came through the door for a class, personal and corporate.
+   *
+   * Corporate check-ins hang off `corporate_booking_id`; personal ones off
+   * `booking_id`. Both have to be counted or the trainer's headcount is short.
+   */
   checkinCountFor: staffProcedure
     .input(z.object({ classId: z.number() }))
     .query(async ({ ctx, input }) => {
       const [result] = await ctx.db
         .select({ count: sql<number>`count(*)` })
         .from(checkins)
-        .innerJoin(bookings, eq(checkins.bookingId, bookings.id))
-        .where(eq(bookings.classId, input.classId));
+        .leftJoin(bookings, eq(checkins.bookingId, bookings.id))
+        .leftJoin(
+          corporateBookings,
+          eq(checkins.corporateBookingId, corporateBookings.id),
+        )
+        .where(
+          or(
+            and(isNotNull(checkins.bookingId), eq(bookings.classId, input.classId)),
+            and(
+              isNotNull(checkins.corporateBookingId),
+              eq(corporateBookings.classId, input.classId),
+            ),
+          ),
+        );
 
       return { count: Number(result?.count ?? 0) };
     }),
@@ -282,18 +303,28 @@ export const bookingsRouter = router({
     return Promise.all(
       waitlistedBookings.map(async (entry) => ({
         ...entry,
-        position: (await countAheadInQueue(ctx.db, entry.classId, entry.bookedAt)) + 1,
+        position: (await countAheadInQueue(ctx.db, entry.classId, entry.bookingId)) + 1,
       })),
     );
   }),
 });
 
-/** How many members are ahead of `bookedAt` in a class's waitlist. */
-async function countAheadInQueue(
-  db: Database,
-  classId: number,
-  bookedAt: string,
-) {
+/**
+ * How many members are ahead of a given booking in a class's waitlist.
+ *
+ * Ranks on `(bookedAt, id)` to match the order promotion actually uses.
+ * `bookedAt` alone resolves only to the second, so two people who joined in the
+ * same second used to be shown the same queue position.
+ */
+async function countAheadInQueue(db: DbClient, classId: number, bookingId: number) {
+  const target = await db
+    .select({ bookedAt: bookings.bookedAt })
+    .from(bookings)
+    .where(eq(bookings.id, bookingId))
+    .get();
+
+  if (!target) return 0;
+
   const [{ position }] = await db
     .select({ position: sql<number>`count(*)` })
     .from(bookings)
@@ -301,30 +332,15 @@ async function countAheadInQueue(
       and(
         eq(bookings.classId, classId),
         eq(bookings.status, "waitlisted"),
-        sql`${bookings.bookedAt} < ${bookedAt}`,
+        or(
+          sql`${bookings.bookedAt} < ${target.bookedAt}`,
+          and(
+            sql`${bookings.bookedAt} = ${target.bookedAt}`,
+            sql`${bookings.id} < ${bookingId}`,
+          ),
+        ),
       ),
     );
 
   return Number(position);
-}
-
-/**
- * Moves the longest-waiting member into the spot just freed, charging their
- * membership for it.
- */
-async function promoteFromWaitlist(
-  db: Database,
-  cls: { id: number; creditCost: number },
-) {
-  const next = await findNextWaitlisted(db, cls.id);
-  if (!next) return;
-
-  await db
-    .update(bookings)
-    .set({ status: "booked", creditsUsed: cls.creditCost })
-    .where(eq(bookings.id, next.id));
-
-  if (next.membershipId) {
-    await chargeCreditsForPromotion(db, next.membershipId, cls.creditCost);
-  }
 }

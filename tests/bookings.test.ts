@@ -14,8 +14,8 @@ import {
 
 let db: TestDb;
 
-beforeEach(() => {
-  db = createTestDb();
+beforeEach(async () => {
+  db = await createTestDb();
 });
 
 describe("bookings.book", () => {
@@ -246,6 +246,115 @@ describe("bookings.cancel", () => {
       .get();
     expect(after!.status).toBe("cancelled");
     expect(after!.cancelledAt).toBeTruthy();
+  });
+
+  it("skips a waitlisted member who can no longer afford the class", async () => {
+    const cls = await makeClass(db, {
+      capacity: 1,
+      creditCost: 5,
+      startsAt: hoursFromNow(48),
+    });
+
+    const holder = await makeUser(db);
+    await makeMembership(db, holder.id, { creditsRemaining: 10 });
+    const holderBooking = await callerFor(db, holder).bookings.book({ classId: cls.id });
+
+    // Joins the queue first, but is broke by the time a spot opens.
+    const broke = await makeUser(db);
+    const brokeMs = await makeMembership(db, broke.id, { creditsRemaining: 10 });
+    const brokeBooking = await callerFor(db, broke).bookings.book({ classId: cls.id });
+
+    const solvent = await makeUser(db);
+    const solventMs = await makeMembership(db, solvent.id, { creditsRemaining: 10 });
+    const solventBooking = await callerFor(db, solvent).bookings.book({ classId: cls.id });
+
+    await db
+      .update(schema.memberships)
+      .set({ creditsRemaining: 1 })
+      .where(eq(schema.memberships.id, brokeMs.id));
+
+    await callerFor(db, holder).bookings.cancel({ bookingId: holderBooking.id });
+
+    const passedOver = await db
+      .select()
+      .from(schema.bookings)
+      .where(eq(schema.bookings.id, brokeBooking.id))
+      .get();
+    expect(passedOver!.status).toBe("waitlisted");
+
+    const promoted = await db
+      .select()
+      .from(schema.bookings)
+      .where(eq(schema.bookings.id, solventBooking.id))
+      .get();
+    expect(promoted!.status).toBe("booked");
+
+    // The member who could not pay keeps every credit they had.
+    const brokeAfter = await db
+      .select()
+      .from(schema.memberships)
+      .where(eq(schema.memberships.id, brokeMs.id))
+      .get();
+    expect(brokeAfter!.creditsRemaining).toBe(1);
+
+    const solventAfter = await db
+      .select()
+      .from(schema.memberships)
+      .where(eq(schema.memberships.id, solventMs.id))
+      .get();
+    expect(solventAfter!.creditsRemaining).toBe(5);
+  });
+
+  it("leaves the spot open when nobody in the queue can pay", async () => {
+    const cls = await makeClass(db, {
+      capacity: 1,
+      creditCost: 5,
+      startsAt: hoursFromNow(48),
+    });
+
+    const holder = await makeUser(db);
+    await makeMembership(db, holder.id, { creditsRemaining: 10 });
+    const holderBooking = await callerFor(db, holder).bookings.book({ classId: cls.id });
+
+    const waiter = await makeUser(db);
+    const waiterMs = await makeMembership(db, waiter.id, { creditsRemaining: 10 });
+    const waiterBooking = await callerFor(db, waiter).bookings.book({ classId: cls.id });
+
+    await db
+      .update(schema.memberships)
+      .set({ creditsRemaining: 0 })
+      .where(eq(schema.memberships.id, waiterMs.id));
+
+    await callerFor(db, holder).bookings.cancel({ bookingId: holderBooking.id });
+
+    const stillWaiting = await db
+      .select()
+      .from(schema.bookings)
+      .where(eq(schema.bookings.id, waiterBooking.id))
+      .get();
+    expect(stillWaiting!.status).toBe("waitlisted");
+  });
+
+  it("tells the promoted member they got the spot", async () => {
+    const cls = await makeClass(db, { capacity: 1, startsAt: hoursFromNow(48) });
+
+    const holder = await makeUser(db);
+    await makeMembership(db, holder.id);
+    const holderBooking = await callerFor(db, holder).bookings.book({ classId: cls.id });
+
+    const waiter = await makeUser(db);
+    await makeMembership(db, waiter.id);
+    await callerFor(db, waiter).bookings.book({ classId: cls.id });
+
+    await callerFor(db, holder).bookings.cancel({ bookingId: holderBooking.id });
+
+    const inbox = await callerFor(db, waiter).notifications.list({});
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0].type).toBe("waitlist_promotion");
+    expect(inbox[0].message).toContain(cls.name);
+
+    // The member who cancelled is not notified about their own cancellation.
+    expect(await callerFor(db, holder).notifications.list({})).toHaveLength(0);
   });
 
   it("promotes the longest-waiting member and charges their credits", async () => {

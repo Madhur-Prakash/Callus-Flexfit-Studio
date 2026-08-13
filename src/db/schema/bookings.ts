@@ -3,6 +3,7 @@ import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { users } from "./identity";
 import { memberships } from "./memberships";
 import { classes } from "./scheduling";
+import { corporateBookings } from "./corporate";
 
 /** Shared by personal and corporate bookings. */
 const BOOKING_STATUSES = ["booked", "cancelled", "attended", "no_show", "waitlisted"] as const;
@@ -31,7 +32,19 @@ export const checkins = sqliteTable("checkins", {
   userId: integer("user_id")
     .notNull()
     .references(() => users.id),
+  /** Set for a personal booking; null for a corporate one. */
   bookingId: integer("booking_id").references(() => bookings.id),
+  /**
+   * Set for a corporate booking; null for a personal one.
+   *
+   * Corporate bookings live in their own table, so their ids cannot go in
+   * `booking_id` — its foreign key points at `bookings`. Before this column
+   * existed, corporate check-ins were written with both the link and the
+   * source discarded, which made them invisible to every attendance report.
+   */
+  corporateBookingId: integer("corporate_booking_id").references(
+    () => corporateBookings.id,
+  ),
   checkedInAt: text("checked_in_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),

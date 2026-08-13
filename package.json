@@ -7,8 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "typecheck": "tsc --noEmit",
     "db:push": "drizzle-kit push",
-    "db:seed": "tsx src/db/seed.ts",
+    "db:seed": "tsx src/db/seed/index.ts",
     "db:reset": "node -e \"require('fs').rmSync('flexfit.db',{force:true})\" && npm run db:push && npm run db:seed",
     "test": "vitest run"
   },

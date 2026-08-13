@@ -1,98 +1,129 @@
 "use client";
 
 import { useState } from "react";
-import { trpc } from "@/lib/trpc";
+import {
+  AccessDenied,
+  Callout,
+  PageHeader,
+  PanelList,
+  Section,
+  SubtleButton,
+  SubtleInput,
+  color,
+} from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
+import { useCurrentUser } from "@/lib/hooks/use-current-user";
+import { useTransientValue } from "@/lib/hooks/use-transient";
+import { isStaff } from "@/lib/roles";
+import { trpc } from "@/lib/trpc/client";
+
+/** How far ahead the desk looks for a member's next class. */
+const CHECKIN_WINDOW_HOURS = 2;
+
+/** Lookup needs more than this many characters before it fires. */
+const MIN_QUERY_LENGTH = 2;
+
+type SelectedMember = { id: number; name: string };
 
 export default function KioskPage() {
-  const { data: user } = trpc.auth.me.useQuery();
+  const { user } = useCurrentUser();
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedMember, setSelectedMember] = useState<any>(null);
-  const [checkinSuccess, setCheckinSuccess] = useState<{ memberName: string; className: string } | null>(null);
+  const [selectedMember, setSelectedMember] = useState<SelectedMember | null>(null);
+
+  const clearSelection = () => {
+    setSearchQuery("");
+    setSelectedMember(null);
+  };
+
+  const [checkinSuccess, showCheckinSuccess] = useTransientValue<{
+    memberName: string;
+    className: string;
+  }>(3000, clearSelection);
 
   const lookupMember = trpc.members.lookupByEmailOrPhone.useQuery(
     { query: searchQuery },
-    { enabled: !!searchQuery && searchQuery.length > 2 },
+    { enabled: !!searchQuery && searchQuery.length > MIN_QUERY_LENGTH },
   );
 
   const upcomingClasses = trpc.bookings.upcomingForMember.useQuery(
-    { userId: selectedMember?.id || 0, hoursAhead: 2 },
+    { userId: selectedMember?.id ?? 0, hoursAhead: CHECKIN_WINDOW_HOURS },
     { enabled: !!selectedMember },
   );
 
   const memberDetails = trpc.members.byId.useQuery(
-    { id: selectedMember?.id || 0 },
+    { id: selectedMember?.id ?? 0 },
     { enabled: !!selectedMember },
   );
 
   const markAttended = trpc.bookings.markAttended.useMutation({
     onSuccess: (_, variables) => {
-      const classInfo = upcomingClasses.data?.find((c) => c.bookingId === variables.bookingId);
+      const classInfo = upcomingClasses.data?.find(
+        (c) => c.bookingId === variables.bookingId,
+      );
       if (classInfo && selectedMember) {
-        setCheckinSuccess({
+        showCheckinSuccess({
           memberName: selectedMember.name,
           className: classInfo.className,
         });
-        setTimeout(() => {
-          setCheckinSuccess(null);
-          setSearchQuery("");
-          setSelectedMember(null);
-        }, 3000);
         upcomingClasses.refetch();
       }
     },
   });
 
-  if (user?.role !== "admin" && user?.role !== "trainer") {
-    return <p className="muted">Access denied. Staff only.</p>;
+  if (!isStaff(user?.role)) {
+    return <AccessDenied audience="Staff only." />;
   }
 
-  const isMembershipExpired = memberDetails.data && memberDetails.data.memberships && memberDetails.data.memberships.length > 0
-    ? new Date(memberDetails.data.memberships[0].endDate) < new Date()
+  // The most recent membership is the one the desk cares about.
+  const latestMembership = memberDetails.data?.memberships?.[0];
+  const isMembershipExpired = latestMembership
+    ? new Date(latestMembership.endDate) < new Date()
     : false;
-
-  const hasNoCredits = memberDetails.data?.memberships?.[0]?.creditsRemaining === 0;
+  const hasNoCredits = latestMembership?.creditsRemaining === 0;
+  const blockCheckin = isMembershipExpired || hasNoCredits;
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Check-in Kiosk</h1>
-        <p className="muted mt-1 text-sm">Look up a member and check them in to upcoming classes</p>
-      </div>
+      <PageHeader
+        title="Check-in Kiosk"
+        subtitle="Look up a member and check them in to upcoming classes"
+      />
 
       {checkinSuccess && (
-        <div className="rounded border p-4" style={{ borderColor: "#16a34a", background: "#064e3b", color: "#bbf7d0" }}>
+        <Callout tone="success" className="rounded border p-4">
           <div className="font-medium">✓ Check-in successful</div>
-          <div className="muted mt-1 text-sm">{checkinSuccess.memberName} checked in to {checkinSuccess.className}</div>
-        </div>
+          <div className="muted mt-1 text-sm">
+            {checkinSuccess.memberName} checked in to {checkinSuccess.className}
+          </div>
+        </Callout>
       )}
 
-      <section className="space-y-3">
-        <h2 className="font-medium">Find Member</h2>
+      <Section title="Find Member">
         <div className="flex gap-2">
-          <input
+          <SubtleInput
             type="text"
             placeholder="Email or phone number"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="flex-1 rounded border px-3 py-2 text-sm"
-            style={{
-              borderColor: "var(--border)",
-              background: "var(--bg-secondary)",
-              color: "var(--fg)",
-            }}
           />
         </div>
 
         {lookupMember.isLoading && <p className="muted text-sm">Searching...</p>}
-        {lookupMember.error && <p className="text-sm" style={{ color: "#ef4444" }}>Member not found</p>}
+        {lookupMember.error && (
+          <p className="text-sm" style={{ color: color.dangerStrong }}>
+            Member not found
+          </p>
+        )}
         {lookupMember.data && !selectedMember && (
           <div className="panel p-4">
             <div className="flex items-center justify-between">
               <div>
                 <div className="font-medium">{lookupMember.data.name}</div>
                 <div className="muted text-xs mt-1">{lookupMember.data.email}</div>
-                {lookupMember.data.phone && <div className="muted text-xs">{lookupMember.data.phone}</div>}
+                {lookupMember.data.phone && (
+                  <div className="muted text-xs">{lookupMember.data.phone}</div>
+                )}
               </div>
               <button
                 onClick={() => setSelectedMember(lookupMember.data)}
@@ -103,49 +134,32 @@ export default function KioskPage() {
             </div>
           </div>
         )}
-      </section>
+      </Section>
 
       {selectedMember && (
-        <section className="space-y-3">
+        <Section>
           <div className="flex items-center justify-between">
             <h2 className="font-medium">Member: {selectedMember.name}</h2>
-            <button
-              onClick={() => {
-                setSelectedMember(null);
-                setSearchQuery("");
-              }}
-              className="btn btn-sm"
-              style={{
-                background: "var(--bg-secondary)",
-                color: "var(--fg)",
-                borderColor: "var(--border)",
-              }}
-            >
-              Change member
-            </button>
+            <SubtleButton onClick={clearSelection}>Change member</SubtleButton>
           </div>
 
-          {memberDetails.data?.memberships && memberDetails.data.memberships.length > 0 && (
+          {latestMembership && (
             <div className="space-y-2">
               {isMembershipExpired && (
-                <div className="rounded border p-3 text-sm" style={{ borderColor: "#dc2626", background: "#7f1d1d", color: "#fca5a5" }}>
-                  ⚠ Membership has expired
-                </div>
+                <Callout tone="error">⚠ Membership has expired</Callout>
               )}
-              {hasNoCredits && (
-                <div className="rounded border p-3 text-sm" style={{ borderColor: "#dc2626", background: "#7f1d1d", color: "#fca5a5" }}>
-                  ⚠ No credits remaining
-                </div>
-              )}
+              {hasNoCredits && <Callout tone="error">⚠ No credits remaining</Callout>}
             </div>
           )}
 
           {upcomingClasses.isLoading && <p className="muted text-sm">Loading classes...</p>}
-          {upcomingClasses.data && upcomingClasses.data.length === 0 && (
-            <p className="muted text-sm">No classes in the next 2 hours</p>
+          {upcomingClasses.data?.length === 0 && (
+            <p className="muted text-sm">
+              No classes in the next {CHECKIN_WINDOW_HOURS} hours
+            </p>
           )}
           {upcomingClasses.data && upcomingClasses.data.length > 0 && (
-            <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
+            <PanelList>
               {upcomingClasses.data.map((cls) => (
                 <div key={cls.bookingId} className="p-4">
                   <div className="flex items-center justify-between">
@@ -160,12 +174,9 @@ export default function KioskPage() {
                     </div>
                     <button
                       onClick={() =>
-                        markAttended.mutate({
-                          bookingId: cls.bookingId,
-                          source: "kiosk",
-                        })
+                        markAttended.mutate({ bookingId: cls.bookingId, source: "kiosk" })
                       }
-                      disabled={markAttended.isPending || isMembershipExpired || hasNoCredits}
+                      disabled={markAttended.isPending || blockCheckin}
                       className="btn btn-primary btn-sm ml-4"
                     >
                       Check in
@@ -173,9 +184,9 @@ export default function KioskPage() {
                   </div>
                 </div>
               ))}
-            </div>
+            </PanelList>
           )}
-        </section>
+        </Section>
       )}
     </div>
   );

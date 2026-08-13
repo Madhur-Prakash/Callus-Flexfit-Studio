@@ -1,11 +1,14 @@
 "use client";
 
-import { trpc } from "@/lib/trpc";
+import { InlineAlert, LoadingMessage, PageTitle } from "@/components/ui";
+import { UNLIMITED_CREDITS } from "@/features/memberships/credits";
 import { formatMoney } from "@/lib/format";
+import { useCurrentUser } from "@/lib/hooks/use-current-user";
+import { trpc } from "@/lib/trpc/client";
 
 export default function PlansPage() {
   const utils = trpc.useUtils();
-  const { data: user } = trpc.auth.me.useQuery();
+  const { user } = useCurrentUser();
   const { data: plans, isLoading } = trpc.plans.list.useQuery({});
 
   const subscribe = trpc.plans.subscribe.useMutation({
@@ -15,45 +18,41 @@ export default function PlansPage() {
     },
   });
 
-  if (isLoading) return <p className="muted">Loading plans...</p>;
+  if (isLoading) return <LoadingMessage>Loading plans...</LoadingMessage>;
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Membership plans</h1>
+      <PageTitle>Membership plans</PageTitle>
 
       {subscribe.error && (
-        <p className="panel p-3 text-sm" style={{ color: "#f87171" }}>
-          {subscribe.error.message}
-        </p>
+        <InlineAlert tone="error">{subscribe.error.message}</InlineAlert>
       )}
 
       {subscribe.isSuccess && (
-        <p className="panel p-3 text-sm" style={{ color: "var(--accent)" }}>
-          Membership activated.
-        </p>
+        <InlineAlert tone="success">Membership activated.</InlineAlert>
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {plans?.map((p) => (
-          <div key={p.id} className="panel flex flex-col gap-3 p-5">
+        {plans?.map((plan) => (
+          <div key={plan.id} className="panel flex flex-col gap-3 p-5">
             <div>
-              <h2 className="font-medium">{p.name}</h2>
-              <p className="muted mt-1 text-sm">{p.description}</p>
+              <h2 className="font-medium">{plan.name}</h2>
+              <p className="muted mt-1 text-sm">{plan.description}</p>
             </div>
 
-            <div className="text-2xl font-semibold">
-              {formatMoney(p.priceCents)}
-            </div>
+            <div className="text-2xl font-semibold">{formatMoney(plan.priceCents)}</div>
 
             <p className="muted text-sm">
-              {p.durationDays} days &middot;{" "}
-              {p.classCredits >= 999 ? "Unlimited classes" : `${p.classCredits} credits`}
+              {plan.durationDays} days &middot;{" "}
+              {plan.classCredits >= UNLIMITED_CREDITS
+                ? "Unlimited classes"
+                : `${plan.classCredits} credits`}
             </p>
 
             <button
               className="btn btn-primary mt-auto"
               disabled={!user || subscribe.isPending}
-              onClick={() => subscribe.mutate({ planId: p.id, method: "card" })}
+              onClick={() => subscribe.mutate({ planId: plan.id, method: "card" })}
             >
               {user ? "Subscribe" : "Sign in to subscribe"}
             </button>

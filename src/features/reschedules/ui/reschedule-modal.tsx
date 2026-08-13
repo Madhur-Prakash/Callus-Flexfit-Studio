@@ -1,44 +1,34 @@
 "use client";
 
 import { useState } from "react";
-import { trpc } from "@/lib/trpc";
+import { Badge, color } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
+import { trpc } from "@/lib/trpc/client";
 
-interface RescheduleModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  fromBookingId: number;
-  fromClassName: string;
-  fromClassTime: string;
-  onSuccess: () => void;
-}
+type RescheduleTarget = {
+  bookingId: number;
+  className: string;
+  classTime: string;
+};
 
 export function RescheduleModal({
-  isOpen,
+  target,
   onClose,
-  fromBookingId,
-  fromClassName,
-  fromClassTime,
   onSuccess,
-}: RescheduleModalProps) {
+}: {
+  /** Null when closed. */
+  target: RescheduleTarget | null;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const utils = trpc.useUtils();
 
-  // Get available classes with the same name
   const { data: availableClasses } = trpc.classes.list.useQuery(
-    {
-      from: new Date().toISOString(),
-    },
-    {
-      enabled: isOpen,
-    }
-  );
-
-  // Filter to only same-name classes (excluding the original)
-  const sameNameClasses = (availableClasses || []).filter(
-    (cls) => cls.name === fromClassName
+    { from: new Date().toISOString() },
+    { enabled: target !== null },
   );
 
   const reschedule = trpc.reschedules.reschedule.useMutation({
@@ -51,12 +41,16 @@ export function RescheduleModal({
       onClose();
       onSuccess();
     },
-    onError: (err) => {
-      setError(err.message);
-    },
+    onError: (err) => setError(err.message),
   });
 
-  if (!isOpen) return null;
+  if (!target) return null;
+
+  // The server only accepts a move to a class of the same name, so the picker
+  // never offers anything else.
+  const sameNameClasses = (availableClasses ?? []).filter(
+    (cls) => cls.name === target.className,
+  );
 
   return (
     <div
@@ -79,22 +73,18 @@ export function RescheduleModal({
         <div>
           <h2 className="text-lg font-semibold">Reschedule class</h2>
           <p className="muted mt-1 text-sm">
-            Moving: {fromClassName} on {formatDateTime(fromClassTime)}
+            Moving: {target.className} on {formatDateTime(target.classTime)}
           </p>
         </div>
 
-        {error && (
-          <p style={{ color: "#f87171", fontSize: "0.875rem" }}>
-            {error}
-          </p>
-        )}
+        {error && <p style={{ color: color.danger, fontSize: "0.875rem" }}>{error}</p>}
 
         <div className="space-y-2 max-h-64 overflow-y-auto">
           {sameNameClasses.length ? (
             sameNameClasses.map((cls) => (
               <button
                 key={cls.id}
-                className={`panel w-full p-3 text-left`}
+                className="panel w-full p-3 text-left"
                 onClick={() => setSelectedClassId(cls.id)}
                 style={{
                   border:
@@ -106,14 +96,7 @@ export function RescheduleModal({
               >
                 <div className="flex items-center gap-2">
                   <h3 className="font-medium text-sm">{cls.name}</h3>
-                  {(cls.full || (cls.spotsLeft ?? 0) === 0) && (
-                    <span
-                      className="rounded px-1.5 py-0.5 text-xs"
-                      style={{ background: "#3a2a1a", color: "#fbbf24" }}
-                    >
-                      Waitlist
-                    </span>
-                  )}
+                  {(cls.full || (cls.spotsLeft ?? 0) === 0) && <Badge>Waitlist</Badge>}
                 </div>
                 <p className="muted text-xs mt-1">
                   {formatDateTime(cls.startsAt)} • {cls.room}
@@ -122,28 +105,22 @@ export function RescheduleModal({
             ))
           ) : (
             <p className="muted text-sm text-center py-4">
-              No other {fromClassName} classes available
+              No other {target.className} classes available
             </p>
           )}
         </div>
 
         <div className="flex gap-2 justify-end">
-          <button
-            className="btn"
-            disabled={reschedule.isPending}
-            onClick={onClose}
-          >
+          <button className="btn" disabled={reschedule.isPending} onClick={onClose}>
             Cancel
           </button>
           <button
             className="btn btn-primary"
-            disabled={
-              !selectedClassId || reschedule.isPending
-            }
+            disabled={!selectedClassId || reschedule.isPending}
             onClick={() => {
               if (selectedClassId) {
                 reschedule.mutate({
-                  fromBookingId,
+                  fromBookingId: target.bookingId,
                   toClassId: selectedClassId,
                 });
               }
@@ -156,3 +133,5 @@ export function RescheduleModal({
     </div>
   );
 }
+
+export type { RescheduleTarget };

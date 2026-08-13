@@ -1,75 +1,75 @@
 "use client";
 
-import { trpc } from "@/lib/trpc";
+import {
+  AccessDenied,
+  EmptyNote,
+  LoadingMessage,
+  PageHeader,
+  PanelList,
+  Section,
+  StatTile,
+} from "@/components/ui";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { useCurrentUser } from "@/lib/hooks/use-current-user";
+import { isAdmin } from "@/lib/roles";
+import { trpc } from "@/lib/trpc/client";
 
 export default function AdminAttendancePage() {
-  const { data: user } = trpc.auth.me.useQuery();
+  const { user } = useCurrentUser();
+
   const { data: checkinsPerDay, isLoading: checkinsLoading } =
     trpc.admin.checkinsPerDay.useQuery();
   const { data: topTrainers, isLoading: trainersLoading } =
     trpc.admin.topTrainers.useQuery();
-  const { data: noShowList, isLoading: noShowLoading } =
-    trpc.admin.noShowList.useQuery();
+  const { data: noShowList, isLoading: noShowLoading } = trpc.admin.noShowList.useQuery();
 
-  const isLoading = checkinsLoading || trainersLoading || noShowLoading;
-
-  if (user?.role !== "admin") {
-    return <p className="muted">Access denied. Admins only.</p>;
+  if (!isAdmin(user?.role)) {
+    return <AccessDenied audience="Admins only." />;
   }
 
-  if (isLoading) return <p className="muted">Loading attendance data...</p>;
+  if (checkinsLoading || trainersLoading || noShowLoading) {
+    return <LoadingMessage>Loading attendance data...</LoadingMessage>;
+  }
 
-  const totalCheckins = (checkinsPerDay || []).reduce((sum, row) => sum + row.count, 0);
+  const totalCheckins = (checkinsPerDay ?? []).reduce((sum, row) => sum + row.count, 0);
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Attendance</h1>
-        <p className="muted mt-1 text-sm">Last 14 days of check-ins and class attendance</p>
-      </div>
+      <PageHeader
+        title="Attendance"
+        subtitle="Last 14 days of check-ins and class attendance"
+      />
 
       <section className="grid gap-3 sm:grid-cols-3">
-        <div className="panel p-4">
-          <div className="muted text-xs uppercase tracking-wide">Total Check-ins (14d)</div>
-          <div className="mt-1 text-xl font-semibold">{totalCheckins}</div>
-        </div>
-
-        <div className="panel p-4">
-          <div className="muted text-xs uppercase tracking-wide">Top Trainer</div>
-          <div className="mt-1 text-xl font-semibold">
-            {topTrainers && topTrainers.length > 0
-              ? topTrainers[0].trainerName
-              : "N/A"}
-          </div>
-        </div>
-
-        <div className="panel p-4">
-          <div className="muted text-xs uppercase tracking-wide">No-shows (14d)</div>
-          <div className="mt-1 text-xl font-semibold">{noShowList?.length ?? 0}</div>
-        </div>
+        <StatTile label="Total Check-ins (14d)" value={totalCheckins} />
+        <StatTile
+          label="Top Trainer"
+          value={topTrainers?.length ? topTrainers[0].trainerName : "N/A"}
+        />
+        <StatTile label="No-shows (14d)" value={noShowList?.length ?? 0} />
       </section>
 
-      <section className="space-y-3">
-        <h2 className="font-medium">Check-ins by Day (Last 14 Days)</h2>
+      <Section title="Check-ins by Day (Last 14 Days)">
         {checkinsPerDay && checkinsPerDay.length > 0 ? (
-          <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
+          <PanelList>
             {checkinsPerDay.map((row) => (
-              <div key={row.date} className="flex items-center justify-between p-3 text-sm">
+              <div
+                key={row.date}
+                className="flex items-center justify-between p-3 text-sm"
+              >
                 <span className="muted">{formatDate(row.date)}</span>
                 <span className="font-medium">{row.count} check-ins</span>
               </div>
             ))}
-          </div>
+          </PanelList>
         ) : (
-          <p className="muted text-sm">No check-in data available.</p>
+          <EmptyNote>No check-in data available.</EmptyNote>
         )}
-      </section>
+      </Section>
 
-      <section className="space-y-3">
-        <h2 className="font-medium">Top Trainers by Attended Classes</h2>
+      <Section title="Top Trainers by Attended Classes">
         {topTrainers && topTrainers.length > 0 ? (
-          <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
+          <PanelList>
             {topTrainers.map((trainer) => (
               <div key={trainer.trainerId} className="p-3 text-sm">
                 <div className="flex items-center justify-between">
@@ -84,16 +84,15 @@ export default function AdminAttendancePage() {
                 </div>
               </div>
             ))}
-          </div>
+          </PanelList>
         ) : (
-          <p className="muted text-sm">No trainer data available.</p>
+          <EmptyNote>No trainer data available.</EmptyNote>
         )}
-      </section>
+      </Section>
 
-      <section className="space-y-3">
-        <h2 className="font-medium">No-shows (Last 14 Days)</h2>
+      <Section title="No-shows (Last 14 Days)">
         {noShowList && noShowList.length > 0 ? (
-          <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
+          <PanelList>
             {noShowList.map((item) => (
               <div key={item.bookingId} className="p-3 text-sm">
                 <div className="flex items-center justify-between">
@@ -106,11 +105,11 @@ export default function AdminAttendancePage() {
                 </div>
               </div>
             ))}
-          </div>
+          </PanelList>
         ) : (
-          <p className="muted text-sm">No no-shows in the last 14 days.</p>
+          <EmptyNote>No no-shows in the last 14 days.</EmptyNote>
         )}
-      </section>
+      </Section>
     </div>
   );
 }

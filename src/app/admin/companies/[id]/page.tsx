@@ -2,80 +2,65 @@
 
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { trpc } from "@/lib/trpc";
+import {
+  EmptyPanel,
+  LoadingMessage,
+  PageTitle,
+  PanelList,
+  Section,
+} from "@/components/ui";
+import { MemberPicker } from "@/features/corporate/ui/member-picker";
+import { TopUpForm } from "@/features/corporate/ui/top-up-form";
 import { formatDateTime } from "@/lib/format";
+import { trpc } from "@/lib/trpc/client";
 
 export default function CompanyDetailsPage() {
   const params = useParams();
   const id = parseInt(params.id as string);
+
   const { data: company, isLoading, refetch } = trpc.adminCompanies.getById.useQuery({ id });
-  const [topUpAmount, setTopUpAmount] = useState("");
+
   const [showTopUpForm, setShowTopUpForm] = useState(false);
   const [showMemberForm, setShowMemberForm] = useState(false);
-  const [memberQuery, setMemberQuery] = useState("");
-  const { data: memberSearchData } = trpc.members.search.useQuery(
-    { q: memberQuery },
-    { enabled: memberQuery.length > 2 },
-  );
+
+  const reload = () => {
+    refetch();
+  };
 
   const topUpMutation = trpc.adminCompanies.topUp.useMutation({
     onSuccess: () => {
-      setTopUpAmount("");
       setShowTopUpForm(false);
-      refetch();
+      reload();
     },
   });
 
   const activeMutation = trpc.adminCompanies.updateActive.useMutation({
-    onSuccess: () => {
-      refetch();
-    },
+    onSuccess: reload,
   });
 
   const linkMutation = trpc.adminCompanies.linkMember.useMutation({
     onSuccess: () => {
-      setMemberQuery("");
       setShowMemberForm(false);
-      refetch();
+      reload();
     },
   });
 
   const unlinkMutation = trpc.adminCompanies.unlinkMember.useMutation({
-    onSuccess: () => {
-      refetch();
-    },
+    onSuccess: reload,
   });
 
-  const handleTopUp = (e: React.FormEvent) => {
-    e.preventDefault();
-    const amount = parseInt(topUpAmount);
-    if (amount > 0) {
-      topUpMutation.mutate({ id, amount });
-    }
-  };
-
-  const handleToggleActive = () => {
-    if (company) {
-      activeMutation.mutate({ id, active: !company.active });
-    }
-  };
-
-  const handleLinkMember = (userId: number) => {
-    linkMutation.mutate({ companyId: id, userId });
-  };
-
-  if (isLoading) return <p className="muted">Loading...</p>;
+  if (isLoading) return <LoadingMessage />;
   if (!company) return <p className="muted">Company not found</p>;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{company.name}</h1>
+          <PageTitle>{company.name}</PageTitle>
           <p className="muted text-sm">{company.contactEmail}</p>
         </div>
         <button
-          onClick={handleToggleActive}
+          onClick={() => activeMutation.mutate({ id, active: !company.active })}
           className={company.active ? "btn btn-danger btn-sm" : "btn btn-sm"}
           disabled={activeMutation.isPending}
         >
@@ -84,136 +69,50 @@ export default function CompanyDetailsPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <div className="panel p-4">
-          <div className="muted text-xs uppercase tracking-wide mb-2">Credit Pool Balance</div>
-          <div className="text-2xl font-semibold">{company.creditPoolBalance}</div>
-          <button
-            onClick={() => setShowTopUpForm(!showTopUpForm)}
-            className="btn btn-sm mt-3"
-          >
-            Top Up
-          </button>
-        </div>
-
-        <div className="panel p-4">
-          <div className="muted text-xs uppercase tracking-wide mb-2">Linked Members</div>
-          <div className="text-2xl font-semibold">{company.members.length}</div>
-          <button
-            onClick={() => setShowMemberForm(!showMemberForm)}
-            className="btn btn-sm mt-3"
-          >
-            Add Member
-          </button>
-        </div>
+        <CompanyMetric
+          label="Credit Pool Balance"
+          value={company.creditPoolBalance}
+          action="Top Up"
+          onAction={() => setShowTopUpForm(!showTopUpForm)}
+        />
+        <CompanyMetric
+          label="Linked Members"
+          value={company.members.length}
+          action="Add Member"
+          onAction={() => setShowMemberForm(!showMemberForm)}
+        />
       </div>
 
       {showTopUpForm && (
-        <div className="panel p-4">
-          <form onSubmit={handleTopUp} className="space-y-3">
-            <div>
-              <label className="block text-sm font-medium mb-2">Top Up Amount</label>
-              <input
-                type="number"
-                value={topUpAmount}
-                onChange={(e) => setTopUpAmount(e.target.value)}
-                className="w-full px-3 py-2 border rounded"
-                style={{ borderColor: "var(--border)" }}
-                placeholder="Number of credits"
-                disabled={topUpMutation.isPending}
-                min="1"
-              />
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                className="btn"
-                disabled={topUpMutation.isPending || !topUpAmount}
-              >
-                {topUpMutation.isPending ? "Processing..." : "Top Up"}
-              </button>
-              <button
-                type="button"
-                className="btn-outline"
-                onClick={() => setShowTopUpForm(false)}
-                disabled={topUpMutation.isPending}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
+        <TopUpForm
+          pending={topUpMutation.isPending}
+          onCancel={() => setShowTopUpForm(false)}
+          onSubmit={(amount) => topUpMutation.mutate({ id, amount })}
+        />
       )}
 
       {showMemberForm && (
-        <div className="panel p-4 space-y-3">
-          <div>
-            <label className="block text-sm font-medium mb-2">Search Members</label>
-            <input
-              type="text"
-              value={memberQuery}
-              onChange={(e) => setMemberQuery(e.target.value)}
-              className="w-full px-3 py-2 border rounded"
-              style={{ borderColor: "var(--border)" }}
-              placeholder="Search by name or email (3+ chars)"
-              disabled={linkMutation.isPending}
-            />
-          </div>
-
-          {memberSearchData && memberSearchData.length > 0 && (
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {memberSearchData
-                .filter(
-                  (user: any) =>
-                    !company.members.some((m: any) => m.id === user.id),
-                )
-                .map((user: any) => (
-                  <div
-                    key={user.id}
-                    className="flex items-center justify-between p-2 border rounded"
-                    style={{ borderColor: "var(--border)" }}
-                  >
-                    <div className="flex-1">
-                      <div className="font-medium text-sm">{user.name}</div>
-                      <div className="text-xs muted">{user.email}</div>
-                    </div>
-                    <button
-                      onClick={() => handleLinkMember(user.id)}
-                      className="btn btn-sm"
-                      disabled={linkMutation.isPending}
-                    >
-                      Add
-                    </button>
-                  </div>
-                ))}
-            </div>
-          )}
-
-          <button
-            type="button"
-            className="btn-outline"
-            onClick={() => {
-              setShowMemberForm(false);
-              setMemberQuery("");
-            }}
-            disabled={linkMutation.isPending}
-          >
-            Done
-          </button>
-        </div>
+        <MemberPicker
+          linkedMemberIds={company.members.map((m) => m.id)}
+          pending={linkMutation.isPending}
+          onDone={() => setShowMemberForm(false)}
+          onPick={(userId) => linkMutation.mutate({ companyId: id, userId })}
+        />
       )}
 
-      <div className="space-y-3">
-        <h2 className="font-medium">Linked Members ({company.members.length})</h2>
+      <Section title={`Linked Members (${company.members.length})`}>
         {company.members.length > 0 ? (
-          <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
-            {company.members.map((member: any) => (
+          <PanelList>
+            {company.members.map((member) => (
               <div key={member.id} className="flex items-center gap-4 p-3">
                 <div className="flex-1">
                   <div className="font-medium text-sm">{member.name}</div>
                   <div className="text-xs muted">{member.email}</div>
                 </div>
                 <button
-                  onClick={() => unlinkMutation.mutate({ companyMemberId: member.companyMemberId })}
+                  onClick={() =>
+                    unlinkMutation.mutate({ companyMemberId: member.companyMemberId })
+                  }
                   className="btn-outline btn-sm text-red-600"
                   disabled={unlinkMutation.isPending}
                 >
@@ -221,21 +120,22 @@ export default function CompanyDetailsPage() {
                 </button>
               </div>
             ))}
-          </div>
+          </PanelList>
         ) : (
-          <div className="panel p-4 text-center muted">No members linked yet</div>
+          <EmptyPanel>No members linked yet</EmptyPanel>
         )}
-      </div>
+      </Section>
 
-      <div className="space-y-3">
-        <h2 className="font-medium">Recent Corporate Bookings</h2>
+      <Section title="Recent Corporate Bookings">
         {company.recentBookings.length > 0 ? (
-          <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
-            {company.recentBookings.map((booking: any) => (
+          <PanelList>
+            {company.recentBookings.map((booking) => (
               <div key={booking.id} className="p-3 text-sm space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="font-medium">{booking.className}</span>
-                  <span className={booking.status === "attended" ? "text-green-600" : undefined}>
+                  <span
+                    className={booking.status === "attended" ? "text-green-600" : undefined}
+                  >
                     {booking.status}
                   </span>
                 </div>
@@ -245,11 +145,34 @@ export default function CompanyDetailsPage() {
                 <div className="muted">Credits used: {booking.creditsUsed}</div>
               </div>
             ))}
-          </div>
+          </PanelList>
         ) : (
-          <div className="panel p-4 text-center muted">No bookings yet</div>
+          <EmptyPanel>No bookings yet</EmptyPanel>
         )}
-      </div>
+      </Section>
+    </div>
+  );
+}
+
+/** A headline number with the control that changes it. */
+function CompanyMetric({
+  label,
+  value,
+  action,
+  onAction,
+}: {
+  label: string;
+  value: number;
+  action: string;
+  onAction: () => void;
+}) {
+  return (
+    <div className="panel p-4">
+      <div className="muted text-xs uppercase tracking-wide mb-2">{label}</div>
+      <div className="text-2xl font-semibold">{value}</div>
+      <button onClick={onAction} className="btn btn-sm mt-3">
+        {action}
+      </button>
     </div>
   );
 }

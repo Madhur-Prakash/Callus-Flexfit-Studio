@@ -1,82 +1,76 @@
 "use client";
 
 import { useState } from "react";
-import { trpc } from "@/lib/trpc";
+import { Field, PageTitle, TextArea, TextInput, TintedBanner } from "@/components/ui";
+import { useTransientFlag } from "@/lib/hooks/use-transient";
+import { trpc } from "@/lib/trpc/client";
 
 export default function AnnouncementsPage() {
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
-  const [success, setSuccess] = useState(false);
+  const [sent, markSent] = useTransientFlag();
 
   const broadcast = trpc.notifications.broadcast.useMutation({
     onSuccess: () => {
       setTitle("");
       setMessage("");
-      setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
+      markSent();
     },
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (title.trim() && message.trim()) {
-      broadcast.mutate({ title, message });
-    }
-  };
+  const canSubmit = title.trim() !== "" && message.trim() !== "";
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Broadcast Announcement</h1>
+      <PageTitle>Broadcast Announcement</PageTitle>
 
       <div className="panel p-6 max-w-2xl">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Title</label>
-            <input
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (canSubmit) broadcast.mutate({ title, message });
+          }}
+        >
+          <Field label="Title">
+            <TextInput
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-3 py-2 border rounded"
-              style={{ borderColor: "var(--border)" }}
               placeholder="Announcement title"
               disabled={broadcast.isPending}
             />
-          </div>
+          </Field>
 
-          <div>
-            <label className="block text-sm font-medium mb-2">Message</label>
-            <textarea
+          <Field label="Message">
+            <TextArea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              className="w-full px-3 py-2 border rounded"
-              style={{ borderColor: "var(--border)" }}
               placeholder="Announcement message"
               rows={6}
               disabled={broadcast.isPending}
             />
-          </div>
+          </Field>
 
           <button
             type="submit"
             className="btn"
-            disabled={broadcast.isPending || !title.trim() || !message.trim()}
+            disabled={broadcast.isPending || !canSubmit}
           >
             {broadcast.isPending ? "Sending..." : "Send to all members"}
           </button>
         </form>
 
-        {success && (
-          <div className="mt-4 p-3 rounded" style={{ backgroundColor: "rgba(34, 197, 94, 0.1)" }}>
-            <p style={{ color: "var(--accent)" }}>
-              Announcement sent to {broadcast.data?.count || 0} members!
-            </p>
-          </div>
+        {sent && (
+          <TintedBanner tone="success" className="mt-4">
+            Announcement sent to {broadcast.data?.count || 0} members!
+          </TintedBanner>
         )}
 
         {broadcast.error && (
-          <div className="mt-4 p-3 rounded" style={{ backgroundColor: "rgba(239, 68, 68, 0.1)" }}>
-            <p style={{ color: "#ef4444" }}>{broadcast.error.message}</p>
-          </div>
+          <TintedBanner tone="error" className="mt-4">
+            {broadcast.error.message}
+          </TintedBanner>
         )}
       </div>
     </div>

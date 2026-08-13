@@ -1,11 +1,13 @@
 "use client";
 
-import { trpc } from "@/lib/trpc";
+import { Badge, EmptyNote, InlineAlert, LoadingMessage, PageHeader } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
+import { trpc } from "@/lib/trpc/client";
 
 export default function WaitlistPage() {
   const utils = trpc.useUtils();
   const { data: waitlisted, isLoading } = trpc.bookings.waitlisted.useQuery();
+
   const cancel = trpc.bookings.cancel.useMutation({
     onSuccess: async () => {
       await utils.bookings.waitlisted.invalidate();
@@ -14,43 +16,33 @@ export default function WaitlistPage() {
     },
   });
 
-  if (isLoading) return <p className="muted">Loading...</p>;
+  if (isLoading) return <LoadingMessage />;
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Waitlist</h1>
-        <p className="muted mt-1 text-sm">
-          Classes you're waitlisted for
-        </p>
-      </div>
+      <PageHeader title="Waitlist" subtitle="Classes you're waitlisted for" />
 
-      {cancel.error && (
-        <p className="panel p-3 text-sm" style={{ color: "#f87171" }}>
-          {cancel.error.message}
-        </p>
-      )}
+      {cancel.error && <InlineAlert tone="error">{cancel.error.message}</InlineAlert>}
 
       {waitlisted?.length ? (
         <div className="space-y-2">
-          {waitlisted.map((w) => (
-            <div key={w.bookingId} className="panel flex items-center gap-4 p-4">
+          {waitlisted.map((entry) => (
+            <div key={entry.bookingId} className="panel flex items-center gap-4 p-4">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-medium">{w.className}</h3>
-                  <span className="rounded px-2 py-1 text-xs font-medium" style={{ background: "#3a2a1a", color: "#fbbf24" }}>
-                    #{w.position} in queue
-                  </span>
+                  <h3 className="font-medium">{entry.className}</h3>
+                  <Badge size="md">#{entry.position} in queue</Badge>
                 </div>
                 <p className="muted mt-0.5 text-sm">
-                  {formatDateTime(w.startsAt)} &middot; {w.room} &middot; {w.durationMin} min
+                  {formatDateTime(entry.startsAt)} &middot; {entry.room} &middot;{" "}
+                  {entry.durationMin} min
                 </p>
               </div>
 
               <button
                 className="btn"
                 disabled={cancel.isPending}
-                onClick={() => cancel.mutate({ bookingId: w.bookingId })}
+                onClick={() => cancel.mutate({ bookingId: entry.bookingId })}
               >
                 Leave waitlist
               </button>
@@ -58,7 +50,7 @@ export default function WaitlistPage() {
           ))}
         </div>
       ) : (
-        <p className="muted text-sm">You're not waitlisted for any classes.</p>
+        <EmptyNote>You&apos;re not waitlisted for any classes.</EmptyNote>
       )}
     </div>
   );

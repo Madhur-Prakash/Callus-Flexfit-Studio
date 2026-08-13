@@ -1,20 +1,33 @@
 "use client";
 
 import Link from "next/link";
-import { trpc } from "@/lib/trpc";
-import { formatMoney, formatDateTime } from "@/lib/format";
+import { LoadingMessage, PageHeaderRow, PanelList, Section, StatTile } from "@/components/ui";
+import { formatDateTime, formatMoney } from "@/lib/format";
+import { trpc } from "@/lib/trpc/client";
+
+/** Where the utilisation figure starts being worth highlighting. */
+const BUSY_THRESHOLD = 0.8;
+
+const ADMIN_LINKS = [
+  { href: "/admin/companies", label: "Corporate Memberships" },
+  { href: "/admin/reports", label: "Reports" },
+  { href: "/admin/announcements", label: "Send announcement" },
+];
 
 export default function AdminPage() {
-  const { data: stats, isLoading, error } = trpc.admin.stats.useQuery(undefined, {
-    retry: false,
-  });
+  const {
+    data: stats,
+    isLoading,
+    error,
+  } = trpc.admin.stats.useQuery(undefined, { retry: false });
+
   const { data: utilisation } = trpc.admin.classUtilisation.useQuery({ limit: 8 });
   const { data: payments } = trpc.payments.all.useQuery({ limit: 10 });
 
-  if (isLoading) return <p className="muted">Loading...</p>;
+  if (isLoading) return <LoadingMessage />;
   if (error) return <p className="muted">{error.message}</p>;
 
-  const tiles: [string, string][] = [
+  const tiles: Array<[string, string]> = [
     ["Members", String(stats!.totalMembers)],
     ["Active memberships", String(stats!.activeMemberships)],
     ["Upcoming classes", String(stats!.upcomingClasses)],
@@ -25,61 +38,55 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Admin</h1>
+      <PageHeaderRow title="Admin">
         <div className="flex gap-2">
-          <Link href="/admin/companies" className="btn btn-sm">
-            Corporate Memberships
-          </Link>
-          <Link href="/admin/reports" className="btn btn-sm">
-            Reports
-          </Link>
-          <Link href="/admin/announcements" className="btn btn-sm">
-            Send announcement
-          </Link>
+          {ADMIN_LINKS.map((link) => (
+            <Link key={link.href} href={link.href} className="btn btn-sm">
+              {link.label}
+            </Link>
+          ))}
         </div>
-      </div>
+      </PageHeaderRow>
 
       <section className="grid gap-3 sm:grid-cols-3">
         {tiles.map(([label, value]) => (
-          <div key={label} className="panel p-4">
-            <div className="muted text-xs uppercase tracking-wide">{label}</div>
-            <div className="mt-1 text-xl font-semibold">{value}</div>
-          </div>
+          <StatTile key={label} label={label} value={value} />
         ))}
       </section>
 
-      <section className="space-y-3">
-        <h2 className="font-medium">Class utilisation</h2>
-        <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
-          {utilisation?.map((c) => (
-            <div key={c.id} className="flex items-center gap-4 p-3 text-sm">
-              <span className="flex-1">{c.name}</span>
-              <span className="muted">{formatDateTime(c.startsAt)}</span>
+      <Section title="Class utilisation">
+        <PanelList>
+          {utilisation?.map((cls) => (
+            <div key={cls.id} className="flex items-center gap-4 p-3 text-sm">
+              <span className="flex-1">{cls.name}</span>
+              <span className="muted">{formatDateTime(cls.startsAt)}</span>
               <span className="muted">
-                {c.booked}/{c.capacity}
+                {cls.booked}/{cls.capacity}
               </span>
-              <span style={{ color: c.utilisation > 0.8 ? "var(--accent)" : undefined }}>
-                {Math.round(c.utilisation * 100)}%
+              <span
+                style={{
+                  color: cls.utilisation > BUSY_THRESHOLD ? "var(--accent)" : undefined,
+                }}
+              >
+                {Math.round(cls.utilisation * 100)}%
               </span>
             </div>
           ))}
-        </div>
-      </section>
+        </PanelList>
+      </Section>
 
-      <section className="space-y-3">
-        <h2 className="font-medium">Recent payments</h2>
-        <div className="panel divide-y" style={{ borderColor: "var(--border)" }}>
-          {payments?.map((p) => (
-            <div key={p.id} className="flex items-center gap-4 p-3 text-sm">
-              <span className="flex-1">{p.memberName}</span>
-              <span className="muted">{p.method}</span>
-              <span className="muted">{p.status}</span>
-              <span>{formatMoney(p.amountCents)}</span>
+      <Section title="Recent payments">
+        <PanelList>
+          {payments?.map((payment) => (
+            <div key={payment.id} className="flex items-center gap-4 p-3 text-sm">
+              <span className="flex-1">{payment.memberName}</span>
+              <span className="muted">{payment.method}</span>
+              <span className="muted">{payment.status}</span>
+              <span>{formatMoney(payment.amountCents)}</span>
             </div>
           ))}
-        </div>
-      </section>
+        </PanelList>
+      </Section>
     </div>
   );
 }

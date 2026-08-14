@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { DbClient } from "@/db/client";
 import { companies, companyMembers, corporateBookings, type Company } from "@/db/schema";
 import { ACTIVE_BOOKING_STATUSES } from "@/features/bookings/server/booking-policy";
@@ -26,7 +26,7 @@ export function findActiveCompanyFor(db: DbClient, userId: number) {
 }
 
 /** The company behind a booking, but only if its pool can still pay `amount`. */
-export async function findPayingCompany(
+async function findPayingCompany(
   db: DbClient,
   companyId: number,
   amount: number,
@@ -77,44 +77,13 @@ export async function refundToPool(
 // different credit source. Kept separate rather than made generic: the two
 // sets are each a handful of lines, and a shared abstraction over both tables
 // would hide which pool is being spent.
-
-export async function countConfirmedCorporateBookings(
-  db: DbClient,
-  classId: number,
-): Promise<number> {
-  const [{ count }] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(corporateBookings)
-    .where(
-      and(
-        eq(corporateBookings.classId, classId),
-        inArray(corporateBookings.status, ["booked", "attended"]),
-      ),
-    );
-
-  return Number(count);
-}
-
-export function findActiveCorporateBooking(
-  db: DbClient,
-  classId: number,
-  userId: number,
-) {
-  return db
-    .select()
-    .from(corporateBookings)
-    .where(
-      and(
-        eq(corporateBookings.classId, classId),
-        eq(corporateBookings.userId, userId),
-        inArray(corporateBookings.status, [...ACTIVE_BOOKING_STATUSES]),
-      ),
-    )
-    .get();
-}
+//
+// "Is the class full" and "is this member already on it" are *not* here:
+// both span the two booking tables, so they live in
+// `features/classes/server/class-capacity.ts` and are answered once.
 
 /** The corporate waitlist for a class, longest wait first. */
-export function findCorporateWaitlist(db: DbClient, classId: number) {
+function findCorporateWaitlist(db: DbClient, classId: number) {
   return db
     .select()
     .from(corporateBookings)

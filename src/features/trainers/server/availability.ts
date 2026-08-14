@@ -8,7 +8,7 @@
  * classes a trainer is considered free for, so it is preserved as-is.
  */
 
-export type WeeklySlot = {
+type WeeklySlot = {
   dayOfWeek: number;
   /** `HH:MM`, UTC. */
   startTime: string;

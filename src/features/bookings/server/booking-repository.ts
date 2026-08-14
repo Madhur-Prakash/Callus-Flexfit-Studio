@@ -1,31 +1,15 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { DbClient } from "@/db/client";
 import { bookings } from "@/db/schema";
 import { ACTIVE_BOOKING_STATUSES } from "./booking-policy";
 
 /**
- * How many confirmed spots a class has taken.
+ * Queries over the personal bookings table.
  *
- * Counts `attended` as well as `booked`: once the front desk checks someone in
- * they are still occupying the spot. Counting only `booked` made a class look
- * like it had room again as people arrived.
+ * Note there is no "is this class full" here: capacity spans personal *and*
+ * corporate bookings, so that question belongs to
+ * `features/classes/server/class-capacity.ts` and is answered once for both.
  */
-export async function countConfirmedBookings(
-  db: DbClient,
-  classId: number,
-): Promise<number> {
-  const [{ count }] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(bookings)
-    .where(
-      and(
-        eq(bookings.classId, classId),
-        inArray(bookings.status, ["booked", "attended"]),
-      ),
-    );
-
-  return Number(count);
-}
 
 /** The member's existing booked-or-waitlisted row for a class, if any. */
 export function findActiveBooking(db: DbClient, classId: number, userId: number) {

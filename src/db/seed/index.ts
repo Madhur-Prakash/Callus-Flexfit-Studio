@@ -15,6 +15,10 @@ import {
   corporateBookings,
   reschedules,
 } from "../schema";
+import {
+  hasUnlimitedCredits,
+  UNLIMITED_CREDITS,
+} from "@/features/memberships/credits";
 import { hashPassword } from "@/lib/password";
 
 function daysFromNow(n: number): string {
@@ -123,35 +127,35 @@ async function seed() {
         description: "Unlimited classes for 30 days.",
         priceCents: 450000,
         durationDays: 30,
-        classCredits: 999,
+        classCredits: UNLIMITED_CREDITS,
       },
       {
         name: "Quarterly Unlimited",
         description: "Unlimited classes for 90 days.",
         priceCents: 1200000,
         durationDays: 90,
-        classCredits: 999,
+        classCredits: UNLIMITED_CREDITS,
       },
       {
         name: "Annual Unlimited",
         description: "Unlimited classes for 365 days.",
         priceCents: 4000000,
         durationDays: 365,
-        classCredits: 999,
+        classCredits: UNLIMITED_CREDITS,
       },
       {
         name: "Student Monthly",
         description: "Discounted monthly plan. Requires student ID at desk.",
         priceCents: 300000,
         durationDays: 30,
-        classCredits: 999,
+        classCredits: UNLIMITED_CREDITS,
       },
       {
         name: "Legacy Founder Plan",
         description: "Closed to new signups.",
         priceCents: 200000,
         durationDays: 30,
-        classCredits: 999,
+        classCredits: UNLIMITED_CREDITS,
         active: false,
       },
     ])
@@ -165,7 +169,9 @@ async function seed() {
       planId: plan.id,
       startDate: dateOnly(started),
       endDate: dateOnly(started + plan.durationDays),
-      creditsRemaining: plan.classCredits === 999 ? 999 : plan.classCredits - (i % 4),
+      creditsRemaining: hasUnlimitedCredits(plan.classCredits)
+        ? UNLIMITED_CREDITS
+        : plan.classCredits - (i % 4),
       status: (started + plan.durationDays < 0 ? "expired" : "active") as
         | "expired"
         | "active",

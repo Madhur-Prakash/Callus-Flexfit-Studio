@@ -51,4 +51,3 @@ export const payments = sqliteTable("payments", {
 export type MembershipPlan = typeof membershipPlans.$inferSelect;
 export type Membership = typeof memberships.$inferSelect;
 export type Payment = typeof payments.$inferSelect;
-export type PaymentMethod = Payment["method"];

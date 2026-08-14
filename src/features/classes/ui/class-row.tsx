@@ -3,7 +3,7 @@
 import { Badge } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
 
-export type ScheduleClass = {
+type ScheduleClass = {
   id: number;
   name: string;
   room: string;

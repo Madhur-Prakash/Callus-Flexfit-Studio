@@ -18,10 +18,7 @@ import { ACTIVE_BOOKING_STATUSES } from "@/features/bookings/server/booking-poli
 const OCCUPYING_STATUSES = ["booked", "attended"] as const;
 
 /** Confirmed spots taken, personal plus corporate. */
-export async function countConfirmedSpots(
-  db: DbClient,
-  classId: number,
-): Promise<number> {
+async function countConfirmedSpots(db: DbClient, classId: number): Promise<number> {
   const [personal] = await db
     .select({ count: sql<number>`count(*)` })
     .from(bookings)

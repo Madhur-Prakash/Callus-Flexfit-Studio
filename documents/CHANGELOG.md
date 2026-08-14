@@ -4,16 +4,18 @@ Everything changed in FlexFit Studio, and why. Companion to
 [FINDINGS.md](FINDINGS.md), which is the issue register, and
 [ARCHITECTURE.md](ARCHITECTURE.md), which explains the folder layout.
 
-The work ran in three phases, deliberately in this order:
+The work ran in four phases, deliberately in this order:
 
 | Phase | What | Behaviour |
 |---|---|---|
 | [1](#phase-1) | Pin existing behaviour with tests | Unchanged |
 | [2](#phase-2) | Restructure the codebase | Unchanged, and proven so |
 | [3](#phase-3) | Fix the bugs the work surfaced | **Changed — see below** |
+| [4](#phase-4) | Modernise the routing layer | Unchanged |
+| [5](#phase-5) | Remove what the earlier phases made redundant | Unchanged |
 
-Phases 1 and 2 changed nothing a user could observe. Everything in phase 3 was a
-deliberate decision, and every user-visible change is listed.
+Phases 1, 2, 4 and 5 changed nothing a user could observe. Everything in phase 3
+was a deliberate decision, and every user-visible change is listed.
 
 ---
 
@@ -201,7 +203,7 @@ corporate check-ins could not be recorded against anything. Applied with
 
 ### Tests
 
-125 → **141**. The tests that had pinned each bug were rewritten to assert the
+125 → **143**. The tests that had pinned each bug were rewritten to assert the
 intended behaviour, so the suite now describes what the app *should* do rather
 than what it happened to do. New file `tests/booking-integrity.test.ts` covers
 the cross-cutting invariants — shared capacity, one-person-one-spot, and credits
@@ -216,6 +218,185 @@ tables are gone once the transaction commits. Each test now gets its own
 temporary database *file*, which also matches how the app really runs. Two
 latent harness bugs surfaced doing this: DDL execution was never awaited, and
 filenames derived from the process id collided across parallel worker threads.
+
+---
+
+<a id="phase-4"></a>
+## Phase 4 — Modernising the routing layer
+
+Structural only. Every URL, every response and every screen is unchanged; the
+production build lists the same 17 routes at the same sizes.
+
+### Routes are routes again
+
+Previously every page was a `"use client"` file containing a whole screen. Now
+each page is a Server Component of about six lines that names the screen it
+renders, and the screen lives in its feature:
+
+```tsx
+// src/app/(member)/dashboard/page.tsx
+export const metadata: Metadata = { title: "My bookings" };
+
+export default function Page() {
+  return <DashboardScreen />;   // features/bookings/ui/dashboard-screen.tsx
+}
+```
+
+Thirteen screens moved out of `src/app` into their features. `src/app` now
+contains routes, the shell, and nothing else — which is what
+[ARCHITECTURE.md](ARCHITECTURE.md) had been claiming.
+
+### Every page has a title
+
+A `"use client"` page cannot export `metadata`, so all seventeen routes shared
+the single title "FlexFit Studio". Now the root layout carries a template
+(`%s · FlexFit Studio`) and each route sets its own — "My bookings", "Reports",
+"Check-in kiosk". Verified by reading the `<title>` back off every rendered
+route.
+
+### Grouped by audience
+
+Routes are grouped `(public)`, `(member)`, `(staff)`, `(admin)`. Route groups do
+not appear in the URL, so `(admin)/admin/reports` still serves `/admin/reports`;
+they exist so the route tree answers "who is this for", the same question the
+feature folders answer from the other direction.
+
+### Failure states
+
+- `app/error.tsx` — a screen that throws now shows a recoverable message with a
+  "Try again" instead of blanking the app.
+- `app/not-found.tsx` — a real 404 page instead of the framework default.
+
+### Validated environment
+
+`src/env.ts` parses `NODE_ENV` and `DB_FILE` through Zod once at startup and
+fails loudly if they are wrong. `db/client.ts` reads from it rather than poking
+`process.env` directly.
+
+### Stricter compiler
+
+Added `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch` and
+`forceConsistentCasingInFileNames`. The first of these immediately found a dead
+import; the last matters because Windows and macOS hide case collisions that
+break a Linux CI box.
+
+### New feature slice
+
+`features/front-desk/` — the kiosk had been sitting in `app/kiosk/`, but "staff
+run a front desk" is its own part of the business, not a page.
+
+---
+
+<a id="phase-5"></a>
+## Phase 5 — Removing what the fixes made redundant
+
+Fixing the capacity bugs replaced several helpers without deleting the
+originals, so the codebase briefly had two ways to ask the same question. A
+scripted audit of every exported symbol found 21 that nothing outside their own
+file referenced; this pass resolved all of them. Nothing here changes behaviour
+— the same 143 tests pass and the build lists the same 17 routes.
+
+### Deleted — superseded by the shared capacity module
+
+| Removed | Replaced by |
+|---|---|
+| `booking-repository.countConfirmedBookings` | `class-capacity.isClassFull` |
+| `company-credits.countConfirmedCorporateBookings` | `class-capacity.isClassFull` |
+| `company-credits.findActiveCorporateBooking` | `class-capacity.findExistingParticipation` |
+
+These counted one booking table each, which is precisely the bug in
+[#1](FINDINGS.md#1) and [#2](FINDINGS.md#2). Leaving them in place would have
+left the wrong answer one import away. Both modules now carry a note saying
+where the capacity question lives and why it is not local to either of them.
+
+### Deleted — re-exports nothing consumed
+
+`bookings.router`, `corporate-bookings.router` and `reschedules.router` each
+re-exported a policy constant (`FREE_CANCELLATION_HOURS`,
+`CORPORATE_FREE_CANCELLATION_HOURS`, `FREE_RESCHEDULE_HOURS`). Those were
+leftovers from the original layout, where the constants were declared in the
+routers. Nothing imported them from there. `reschedules.router` was importing
+one *solely* in order to re-export it.
+
+### Narrowed — exported, but only ever used in their own file
+
+`countConfirmedSpots`, `findCorporateWaitlist`, `findPayingCompany`,
+`Transaction`, `RescheduleEvaluation`, `WeeklySlot`, `ScheduleClass`,
+`NewCompany`, and `FREE_RESCHEDULE_HOURS` are now module-private. Each module
+exports the operation callers actually need (`isClassFull`,
+`promoteFromCorporateWaitlist`, `evaluateReschedule`) rather than the pieces it
+is built from.
+
+### Deleted — unused derived types
+
+`BookingStatus`, `CheckinSource`, `PaymentMethod` and `NotificationType` were
+union aliases nothing referenced.
+
+**Kept deliberately:** one `$inferSelect` row type per table, including the six
+nothing currently imports (`Checkin`, `CompanyMember`, `CorporateBooking`,
+`Session`, `Notification`, `TrainerAvailability`). They cost nothing at runtime,
+they are the first thing anyone writing a query against that table needs, and a
+complete set is easier to trust than a half-set — deleting the unused half would
+just mean the next person re-derives `typeof checkins.$inferSelect` inline.
+
+### The last magic number
+
+`src/db/seed/` still spelled `999` six times. It now uses `UNLIMITED_CREDITS`
+and `hasUnlimitedCredits` like the rest of the code, so the unlimited-plan
+convention is defined in exactly one place.
+
+### A second pass, after the audit itself proved leaky
+
+The first audit reported a symbol as "used" if *anything* referenced it —
+including the barrel that re-exports it. So a component nobody rendered still
+looked alive, because `components/ui/index.ts` mentioned it. Re-running the
+check while ignoring `components/ui` itself found what the barrel had been
+hiding:
+
+- **`Panel`** — a component with zero callers. Deleted. (`PanelList`, the one
+  people actually use, stays.)
+- **`subtleControlStyle`** — re-exported to the whole app but only ever used
+  inside `components/ui/form.tsx`. Dropped from the barrel.
+- **`membership-credits` re-exporting `UNLIMITED_CREDITS` / `hasUnlimitedCredits`**
+  — every real consumer already imports them from `features/memberships/credits`.
+  The re-export was a second, pointless door onto the same constant.
+
+### The row types went too
+
+Six `$inferSelect` aliases nothing imported — `Checkin`, `CompanyMember`,
+`CorporateBooking`, `Session`, `Notification`, `TrainerAvailability` — are gone.
+An earlier pass kept them for symmetry; on reflection "unused" is the simpler
+rule and the type is one line to re-add the moment something needs it. What
+remains is the set the code actually uses.
+
+### Role guards, deduplicated
+
+Three screens each spelled out their own predicate-and-message pair:
+
+```tsx
+if (!isAdmin(user?.role)) return <AccessDenied audience="Admins only." />;
+```
+
+Nothing tied the check to the wording, so a screen could test one role and name
+another. `components/auth/use-role-guard.tsx` now holds all three pairings and
+returns both the element to render and whether access was allowed — the latter
+for gating queries the screen would otherwise fire before knowing who is asking:
+
+```tsx
+const { allowed, denied } = useRoleGuard("trainer");
+```
+
+### Verified clean
+
+Final audit: **zero** dead exports, zero empty directories, one `hoursUntil`,
+no inline `new Date().toISOString()` outside `lib/`, no role comparisons outside
+`lib/roles.ts` and the guard hook, no duplicated markup outside `components/ui`,
+and every UI component has at least one real caller.
+
+The only two entries the script still prints are `components/ui/index.ts` and
+`db/schema/index.ts` under "files nothing imports" — false positives. They are
+barrels, imported 25 and 26 times respectively as `@/components/ui` and
+`@/db/schema`; the checker does not resolve the implicit `/index`.
 
 ---
 
@@ -236,7 +417,7 @@ Current state, all green:
 
 ```
 pnpm typecheck     # tsc --noEmit, clean
-pnpm test          # 141 passing
+pnpm test          # 143 passing
 pnpm build         # succeeds, 17 routes
 ```
 

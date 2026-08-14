@@ -4,15 +4,18 @@ import { Providers } from "./providers";
 import { NavBar } from "@/components/layout/nav-bar";
 
 export const metadata: Metadata = {
-  title: "FlexFit Studio",
+  // Pages set their own title; this frames it. A page with no title of its own
+  // falls back to `default`.
+  title: {
+    default: "FlexFit Studio",
+    template: "%s · FlexFit Studio",
+  },
   description: "Class booking and membership management for FlexFit Studio.",
 };
 
 export default function RootLayout({
   children,
-}: {
-  children: React.ReactNode;
-}) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
       <body>

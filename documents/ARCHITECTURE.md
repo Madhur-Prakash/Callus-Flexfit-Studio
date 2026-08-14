@@ -20,7 +20,8 @@ src/
 ├── server/       tRPC wiring: context, procedures, the root router.
 ├── db/           Tables and seed data.
 ├── lib/          Framework-agnostic helpers.
-└── components/   Layout and shared presentation.
+├── components/   Layout and shared presentation.
+└── env.ts        Validated environment access.
 ```
 
 A feature slice looks like this:
@@ -30,10 +31,38 @@ src/features/bookings/
 ├── server/
 │   ├── bookings.router.ts       the tRPC surface
 │   ├── booking-policy.ts        rules: windows, refundability, guards
-│   └── booking-repository.ts    the queries
+│   ├── booking-repository.ts    the queries
+│   └── waitlist.ts              promotion, shared by cancel and reschedule
 └── ui/
-    └── booking-row.tsx          "use client" components
+    ├── dashboard-screen.tsx     what /dashboard renders
+    └── booking-row.tsx          the pieces it is built from
 ```
+
+### The route layer
+
+`src/app` holds routes and nothing else. Every page is a Server Component about
+six lines long:
+
+```tsx
+export const metadata: Metadata = { title: "My bookings" };
+
+export default function Page() {
+  return <DashboardScreen />;
+}
+```
+
+Two things fall out of that. Pages can declare `metadata`, which a
+`"use client"` page cannot — so every route now has a real title instead of all
+seventeen sharing one. And the client boundary is visible in the import: the
+route is server, the screen it names is client.
+
+Routes are grouped by audience — `(public)`, `(member)`, `(staff)`, `(admin)`.
+Route groups do not appear in the URL, so `(admin)/admin/reports` is still
+`/admin/reports`; they exist so the tree answers "who is this for" at a glance,
+which is the same question the feature folders answer on the other side.
+
+`error.tsx` and `not-found.tsx` sit at the root: a screen that throws shows a
+recoverable message rather than blanking the app.
 
 ## Why feature-first
 
@@ -72,19 +101,23 @@ module holding the constant and its predicate, which the server module
 re-exports. The `server/` / `ui/` split makes that class of mistake visible in
 the import path instead of in a bundle analyzer.
 
-## What `src/app` is for now
+## Screens, and why they are not pages
 
-Routing and composition only. Pages read their data, decide what to show, and
-hand off. The heavy screens were split:
+The heavy screens were split before they moved:
 
-| Page | Before | After |
+| Screen | Before | After |
 |---|---|---|
-| `admin/companies/[id]` | 255 lines | 148, plus `TopUpForm` and `MemberPicker` |
-| `trainer/schedule` | 230 lines | 61, plus `AvailabilityEditor` and `TrainerClassCard` |
-| `dashboard` | 189 lines | 87, plus `MembershipSummary`, `BookingRow`, `RescheduleHistory` |
+| company detail | 255 lines | 148, plus `TopUpForm` and `MemberPicker` |
+| trainer schedule | 230 lines | 61, plus `AvailabilityEditor` and `TrainerClassCard` |
+| dashboard | 189 lines | 87, plus `MembershipSummary`, `BookingRow`, `RescheduleHistory` |
 
-The extracted pieces live in their feature's `ui/`, not in a global components
+The extracted pieces live in their feature's `ui/`, not a global components
 folder, because `AvailabilityEditor` is only ever a trainers thing.
+
+Each of those screens then moved out of `src/app` entirely, leaving a six-line
+route behind. That is what makes "app holds routes only" true rather than
+aspirational: `/dashboard` is a route that names `DashboardScreen`, and the
+screen lives with the bookings code it is made of.
 
 ## The duplication that mattered
 
@@ -120,6 +153,28 @@ load-bearing, so they became three functions that say what they are:
 
 A single `adjustCredits(±n)` would have been shorter and would have hidden
 exactly the distinction that makes the code correct.
+
+## Keeping the surface small
+
+Modules export the operation callers need, not the pieces it is built from.
+`class-capacity` exports `isClassFull` and `findExistingParticipation`, and
+keeps `countConfirmedSpots` private; `company-credits` exports
+`promoteFromCorporateWaitlist` and keeps the queue query and the
+can-this-company-pay check private.
+
+This is enforced by an audit rather than by discipline: a script walks every
+exported symbol and reports the ones nothing outside their own file references.
+It found 21 after the bug-fix phase — three of them helpers that the capacity
+fix had superseded but not deleted, which is the dangerous kind, because the
+wrong answer stays one import away.
+
+The audit needed a second pass to be trustworthy. Counting any reference as a
+use meant a barrel kept dead code alive: `components/ui/index.ts` re-exported a
+`Panel` component that no screen rendered, and that mention was enough to make
+it look used. Re-running the check while ignoring the barrel found it. The
+lesson generalises — a re-export is a reference, not a user.
+
+It now reports zero dead exports.
 
 ## What I deliberately did not merge
 
@@ -251,5 +306,10 @@ use while `pnpm dev` is running — a `pnpm build` at the same time overwrites t
 directory the dev server is reading and produces confusing MODULE_NOT_FOUND
 errors. Stop dev, delete `.next`, start again if that happens.
 
-`documents/FINDINGS.md` lists the bugs and oddities found along the way, all of
-them preserved rather than silently fixed, each with the fix written out.
+## Where to read next
+
+- [FINDINGS.md](FINDINGS.md) — the 24 bugs found, each with a repro and a fix,
+  plus the ones left open and why.
+- [CHANGELOG.md](CHANGELOG.md) — everything that changed, in the order it
+  happened, including the behaviour changes to review before comparing against
+  the original.

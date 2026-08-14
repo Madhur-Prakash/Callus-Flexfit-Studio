@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { classes, bookings, corporateBookings, users } from "@/db/schema";
 import { nowIso } from "@/lib/datetime";
 import { findConfirmedBookings } from "@/features/bookings/server/booking-repository";

@@ -19,5 +19,3 @@ export const notifications = sqliteTable("notifications", {
     .default(sql`CURRENT_TIMESTAMP`),
 });
 
-export type Notification = typeof notifications.$inferSelect;
-export type NotificationType = Notification["type"];

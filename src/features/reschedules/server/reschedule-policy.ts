@@ -12,7 +12,7 @@ import { findChargeableMembership } from "@/features/memberships/server/membersh
  * Members may reschedule free of charge up to this many hours before the
  * original class starts. This is more generous than the cancellation policy.
  */
-export const FREE_RESCHEDULE_HOURS = 4;
+const FREE_RESCHEDULE_HOURS = 4;
 
 type Rejection = {
   ok: false;
@@ -37,7 +37,7 @@ type Approval = {
   outstandingCredits: number;
 };
 
-export type RescheduleEvaluation = Rejection | Approval;
+type RescheduleEvaluation = Rejection | Approval;
 
 const reject = (code: TRPC_ERROR_CODE_KEY, reason: string): Rejection => ({
   ok: false,

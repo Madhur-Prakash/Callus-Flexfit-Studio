@@ -25,8 +25,6 @@ import {
 } from "./booking-policy";
 import { promoteFromWaitlist } from "./waitlist";
 
-export { FREE_CANCELLATION_HOURS };
-
 const checkinSource = z.enum(["front_desk", "kiosk", "app"]);
 
 export const bookingsRouter = router({

@@ -76,7 +76,4 @@ export const reschedules = sqliteTable("reschedules", {
 });
 
 export type Booking = typeof bookings.$inferSelect;
-export type BookingStatus = Booking["status"];
-export type Checkin = typeof checkins.$inferSelect;
-export type CheckinSource = Checkin["source"];
 export type Reschedule = typeof reschedules.$inferSelect;

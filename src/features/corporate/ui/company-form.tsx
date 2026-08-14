@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Field, TextInput, TintedBanner } from "@/components/ui";
 
-export type NewCompany = {
+type NewCompany = {
   name: string;
   contactEmail: string;
   creditPoolBalance: number;

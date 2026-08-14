@@ -1,16 +1,17 @@
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
+import { env, isProduction } from "@/env";
 import * as schema from "./schema";
 
 const globalForDb = globalThis as unknown as {
   client: ReturnType<typeof createClient> | undefined;
 };
 
-const client =
-  globalForDb.client ??
-  createClient({ url: process.env.DB_FILE ?? "file:flexfit.db" });
+// Reused across hot reloads in development, where the module graph is rebuilt
+// on every edit and a fresh connection each time would leak handles.
+const client = globalForDb.client ?? createClient({ url: env.DB_FILE });
 
-if (process.env.NODE_ENV !== "production") {
+if (!isProduction) {
   globalForDb.client = client;
 }
 
@@ -25,7 +26,7 @@ export { schema };
 export type Database = typeof db;
 
 /** The handle inside `db.transaction(async (tx) => …)`. */
-export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 /**
  * Either a plain connection or an open transaction.

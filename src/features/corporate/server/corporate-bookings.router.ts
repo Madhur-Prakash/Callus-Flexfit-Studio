@@ -23,8 +23,6 @@ import {
   refundToPool,
 } from "./company-credits";
 
-export { CORPORATE_FREE_CANCELLATION_HOURS };
-
 export const corporateBookingsRouter = router({
   mine: protectedProcedure
     .input(z.object({ includePast: z.boolean().default(false) }).default({}))

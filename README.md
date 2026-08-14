@@ -63,20 +63,31 @@ If you're changing anything in `src/db/schema/`, run `pnpm db:push` afterwards o
 
 ```
 src/
-  app/          Next.js routes. Nothing else lives here.
+  app/          routes only — every page is ~6 lines
+    (public)/     /, /login, /schedule, /plans
+    (member)/     /dashboard, /waitlist, /notifications
+    (staff)/      /kiosk, /trainer/schedule
+    (admin)/      /admin/*
   features/     one folder per part of the business, each with:
                   server/  routers, rules, queries
-                  ui/      client components for that feature
+                  ui/      client components, including the screen each page renders
   server/       tRPC context, procedures, root router
   db/           tables (schema/), client, seed data
   lib/          framework-agnostic helpers: dates, roles, formatting
   components/   app shell and shared UI primitives
 tests/          behaviour tests for the whole tRPC surface
-documents/      why the code is arranged this way, and what looks wrong
+documents/      why the code is arranged this way, and what was fixed
 ```
 
-Start with `src/server/root-router.ts` — it names every feature and points at
-where each one lives.
+The bracketed folders are Next.js route groups: they organise the tree by who
+the screen is for and **do not appear in the URL** — `(admin)/admin/reports` is
+still `/admin/reports`.
+
+Two good starting points:
+
+- `src/server/root-router.ts` names every feature and points at where it lives.
+- Any `src/app/**/page.tsx` — each one names the screen it renders, so the route
+  tells you which feature to open.
 
 ## Notes
 

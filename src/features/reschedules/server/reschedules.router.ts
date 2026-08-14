@@ -10,9 +10,7 @@ import {
 } from "@/features/memberships/server/membership-credits";
 import { notifyWaitlistPromotion } from "@/features/notifications/server/notify";
 import { router, protectedProcedure } from "@/server/trpc/procedures";
-import { evaluateReschedule, FREE_RESCHEDULE_HOURS } from "./reschedule-policy";
-
-export { FREE_RESCHEDULE_HOURS };
+import { evaluateReschedule } from "./reschedule-policy";
 
 const rescheduleInput = z.object({
   fromBookingId: z.number(),

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { desc, eq, like, or } from "drizzle-orm";
-import { users, memberships, membershipPlans } from "@/db/schema";
+import { users, memberships, membershipPlans, sessions } from "@/db/schema";
 import { staffProcedure, adminProcedure } from "@/server/trpc/procedures";
 
 /** The columns safe to show staff in a list. Never includes the password hash. */
@@ -86,12 +86,22 @@ export const memberDirectoryProcedures = {
   setActive: adminProcedure
     .input(z.object({ id: z.number(), active: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
-      return ctx.db
+      const updated = await ctx.db
         .update(users)
         .set({ active: input.active })
         .where(eq(users.id, input.id))
         .returning()
         .get();
+
+      // Deactivating should take effect now, not whenever their session
+      // happens to expire. The context also refuses inactive users, so this is
+      // belt and braces — but it means their cookie is dead rather than merely
+      // ignored.
+      if (!input.active) {
+        await ctx.db.delete(sessions).where(eq(sessions.userId, input.id));
+      }
+
+      return updated;
     }),
 
   setRole: adminProcedure

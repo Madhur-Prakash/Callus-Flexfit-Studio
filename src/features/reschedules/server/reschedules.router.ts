@@ -3,6 +3,12 @@ import { TRPCError } from "@trpc/server";
 import { desc, eq, sql } from "drizzle-orm";
 import { bookings, classes, reschedules } from "@/db/schema";
 import { nowIso } from "@/lib/datetime";
+import { promoteFromWaitlist } from "@/features/bookings/server/waitlist";
+import {
+  chargeCredits,
+  findChargeableMembership,
+} from "@/features/memberships/server/membership-credits";
+import { notifyWaitlistPromotion } from "@/features/notifications/server/notify";
 import { router, protectedProcedure } from "@/server/trpc/procedures";
 import { evaluateReschedule, FREE_RESCHEDULE_HOURS } from "./reschedule-policy";
 
@@ -23,34 +29,60 @@ export const reschedulesRouter = router({
         throw new TRPCError({ code: evaluation.code, message: evaluation.reason });
       }
 
-      const { booking, fromClass, toClass, targetIsFull } = evaluation;
+      const { booking, fromClass, toClass, targetIsFull, outstandingCredits } =
+        evaluation;
 
-      // The member keeps whatever they already paid for the original spot: the
-      // move is neither charged nor refunded.
-      const newBooking = await ctx.db
-        .insert(bookings)
-        .values({
-          classId: toClass.id,
+      const { newBooking, promoted } = await ctx.db.transaction(async (tx) => {
+        // The member carries across whatever they already paid, and tops up
+        // only if the new spot costs more than the old one.
+        const created = await tx
+          .insert(bookings)
+          .values({
+            classId: toClass.id,
+            userId: ctx.user.id,
+            membershipId: booking.membershipId,
+            status: targetIsFull ? "waitlisted" : "booked",
+            creditsUsed: booking.creditsUsed + outstandingCredits,
+          })
+          .returning()
+          .get();
+
+        if (outstandingCredits > 0 && booking.membershipId) {
+          const membership = await findChargeableMembership(
+            tx,
+            booking.membershipId,
+            outstandingCredits,
+          );
+          if (membership) {
+            await chargeCredits(tx, membership, outstandingCredits);
+          }
+        }
+
+        await tx
+          .update(bookings)
+          .set({ status: "cancelled", cancelledAt: nowIso() })
+          .where(eq(bookings.id, booking.id));
+
+        await tx.insert(reschedules).values({
           userId: ctx.user.id,
-          membershipId: booking.membershipId,
-          status: targetIsFull ? "waitlisted" : "booked",
-          creditsUsed: booking.creditsUsed,
-        })
-        .returning()
-        .get();
+          fromBookingId: booking.id,
+          toBookingId: created.id,
+          fromClassId: fromClass.id,
+          toClassId: toClass.id,
+        });
 
-      await ctx.db
-        .update(bookings)
-        .set({ status: "cancelled", cancelledAt: nowIso() })
-        .where(eq(bookings.id, booking.id));
+        // Moving away frees the original spot, exactly as cancelling would, so
+        // whoever is waiting for it should get it. This used to be skipped, and
+        // the spot sat empty with people queuing for it.
+        const movedOn =
+          booking.status === "booked" ? await promoteFromWaitlist(tx, fromClass) : null;
 
-      await ctx.db.insert(reschedules).values({
-        userId: ctx.user.id,
-        fromBookingId: booking.id,
-        toBookingId: newBooking.id,
-        fromClassId: fromClass.id,
-        toClassId: toClass.id,
+        return { newBooking: created, promoted: movedOn };
       });
+
+      if (promoted) {
+        await notifyWaitlistPromotion(ctx.db, promoted.userId, fromClass);
+      }
 
       return {
         ok: true,

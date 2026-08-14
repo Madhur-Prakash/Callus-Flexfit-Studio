@@ -128,6 +128,52 @@ describe("members.search and lookup", () => {
   });
 });
 
+describe("members.setActive", () => {
+  it("cuts off a deactivated member who is already signed in", async () => {
+    const member = await makeUser(db);
+    const admin = await makeUser(db, { role: "admin" });
+
+    // Their session exists and works.
+    await db.insert(schema.sessions).values({
+      userId: member.id,
+      token: "live-session",
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    });
+    await expect(callerFor(db, member).members.profile()).resolves.toMatchObject({
+      id: member.id,
+    });
+
+    await callerFor(db, admin).members.setActive({ id: member.id, active: false });
+
+    // The session row is gone, so the cookie they hold is dead rather than
+    // merely ignored.
+    const remaining = await db
+      .select()
+      .from(schema.sessions)
+      .where(eq(schema.sessions.userId, member.id));
+    expect(remaining).toHaveLength(0);
+  });
+
+  it("leaves sessions alone when reactivating", async () => {
+    const member = await makeUser(db, { active: false });
+    const admin = await makeUser(db, { role: "admin" });
+
+    await db.insert(schema.sessions).values({
+      userId: member.id,
+      token: "kept-session",
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    });
+
+    await callerFor(db, admin).members.setActive({ id: member.id, active: true });
+
+    const remaining = await db
+      .select()
+      .from(schema.sessions)
+      .where(eq(schema.sessions.userId, member.id));
+    expect(remaining).toHaveLength(1);
+  });
+});
+
 describe("members.updateProfile", () => {
   it("updates only the fields provided", async () => {
     const member = await makeUser(db, { name: "Old Name", phone: "+91 1" });

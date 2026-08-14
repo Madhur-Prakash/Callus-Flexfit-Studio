@@ -8,6 +8,7 @@ import { trpc } from "@/lib/trpc/client";
 
 type RescheduleTarget = {
   bookingId: number;
+  classId: number;
   className: string;
   classTime: string;
 };
@@ -48,9 +49,11 @@ export function RescheduleModal({
   if (!target) return null;
 
   // The server only accepts a move to a class of the same name, so the picker
-  // never offers anything else.
+  // never offers anything else — and never offers the class the member is
+  // already booked on, which the server rejects with "You are already booked
+  // for this class."
   const sameNameClasses = (availableClasses ?? []).filter(
-    (cls) => cls.name === target.className,
+    (cls) => cls.name === target.className && cls.id !== target.classId,
   );
 
   return (

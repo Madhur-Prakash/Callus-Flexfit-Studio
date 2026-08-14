@@ -26,21 +26,35 @@ export async function promoteFromWaitlist(
   const queue = await findWaitlist(db, cls.id);
 
   for (const candidate of queue) {
-    const membership = await findChargeableMembership(
-      db,
-      candidate.membershipId,
-      cls.creditCost,
-    );
-    if (!membership) continue;
+    // A waitlist place normally costs nothing, so the full price is due on
+    // promotion. But a booking that arrived here by rescheduling carries the
+    // credits it already paid, and charging the full price again would bill
+    // the member twice for one class.
+    const outstanding = Math.max(0, cls.creditCost - candidate.creditsUsed);
+    const creditsUsed = candidate.creditsUsed + outstanding;
 
-    await db
-      .update(bookings)
-      .set({ status: "booked", creditsUsed: cls.creditCost })
-      .where(eq(bookings.id, candidate.id));
+    if (outstanding > 0) {
+      const membership = await findChargeableMembership(
+        db,
+        candidate.membershipId,
+        outstanding,
+      );
+      if (!membership) continue;
 
-    await chargeCredits(db, membership, cls.creditCost);
+      await db
+        .update(bookings)
+        .set({ status: "booked", creditsUsed })
+        .where(eq(bookings.id, candidate.id));
 
-    return { ...candidate, status: "booked", creditsUsed: cls.creditCost };
+      await chargeCredits(db, membership, outstanding);
+    } else {
+      await db
+        .update(bookings)
+        .set({ status: "booked", creditsUsed })
+        .where(eq(bookings.id, candidate.id));
+    }
+
+    return { ...candidate, status: "booked", creditsUsed };
   }
 
   return null;

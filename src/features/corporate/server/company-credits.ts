@@ -155,17 +155,29 @@ export async function promoteFromCorporateWaitlist(
   const queue = await findCorporateWaitlist(db, cls.id);
 
   for (const candidate of queue) {
-    const company = await findPayingCompany(db, candidate.companyId, cls.creditCost);
-    if (!company) continue;
+    // Same rule as personal bookings: only bill what is still outstanding, so
+    // a booking that already paid is not charged twice.
+    const outstanding = Math.max(0, cls.creditCost - candidate.creditsUsed);
+    const creditsUsed = candidate.creditsUsed + outstanding;
 
-    await db
-      .update(corporateBookings)
-      .set({ status: "booked", creditsUsed: cls.creditCost })
-      .where(eq(corporateBookings.id, candidate.id));
+    if (outstanding > 0) {
+      const company = await findPayingCompany(db, candidate.companyId, outstanding);
+      if (!company) continue;
 
-    await debitPool(db, company, cls.creditCost);
+      await db
+        .update(corporateBookings)
+        .set({ status: "booked", creditsUsed })
+        .where(eq(corporateBookings.id, candidate.id));
 
-    return { ...candidate, status: "booked" as const, creditsUsed: cls.creditCost };
+      await debitPool(db, company, outstanding);
+    } else {
+      await db
+        .update(corporateBookings)
+        .set({ status: "booked", creditsUsed })
+        .where(eq(corporateBookings.id, candidate.id));
+    }
+
+    return { ...candidate, status: "booked" as const, creditsUsed };
   }
 
   return null;

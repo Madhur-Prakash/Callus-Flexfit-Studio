@@ -9,14 +9,16 @@ import {
   assertClassIsBookable,
   isRefundableCancellation,
 } from "@/features/bookings/server/booking-policy";
+import {
+  findExistingParticipation,
+  isClassFull,
+} from "@/features/classes/server/class-capacity";
 import { notifyWaitlistPromotion } from "@/features/notifications/server/notify";
 import { router, protectedProcedure, staffProcedure } from "@/server/trpc/procedures";
 import {
   CORPORATE_FREE_CANCELLATION_HOURS,
-  countConfirmedCorporateBookings,
   debitPool,
   findActiveCompanyFor,
-  findActiveCorporateBooking,
   promoteFromCorporateWaitlist,
   refundToPool,
 } from "./company-credits";
@@ -64,33 +66,34 @@ export const corporateBookingsRouter = router({
 
       assertClassIsBookable(cls);
 
-      const existing = await findActiveCorporateBooking(ctx.db, cls.id, ctx.user.id);
-      if (existing) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "You are already on the list for this class.",
-        });
-      }
-
-      const companyRow = await findActiveCompanyFor(ctx.db, ctx.user.id);
-      if (!companyRow) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "You are not linked to an active company.",
-        });
-      }
-
-      const company = companyRow.companies;
-      if (company.creditPoolBalance < cls.creditCost) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Your company does not have enough credits.",
-        });
-      }
-
+      // As with personal bookings: every read that decides the outcome happens
+      // inside the transaction that acts on it.
       return ctx.db.transaction(async (tx) => {
-        const isFull =
-          (await countConfirmedCorporateBookings(tx, cls.id)) >= cls.capacity;
+        const existing = await findExistingParticipation(tx, cls.id, ctx.user.id);
+        if (existing) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "You are already on the list for this class.",
+          });
+        }
+
+        const companyRow = await findActiveCompanyFor(tx, ctx.user.id);
+        if (!companyRow) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You are not linked to an active company.",
+          });
+        }
+
+        const company = companyRow.companies;
+        if (company.creditPoolBalance < cls.creditCost) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Your company does not have enough credits.",
+          });
+        }
+
+        const isFull = await isClassFull(tx, cls);
 
         const created = await tx
           .insert(corporateBookings)

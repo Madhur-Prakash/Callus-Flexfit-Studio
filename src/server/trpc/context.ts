@@ -8,6 +8,11 @@ export const SESSION_COOKIE = "flexfit_session";
 /**
  * Resolves the signed-in user from the session cookie. An expired session is
  * treated as no session; the row is left in place.
+ *
+ * A deactivated account is also treated as no session. `auth.login` refuses
+ * inactive users, but that only guards the front door: without this check an
+ * admin could deactivate someone who was already signed in and they would keep
+ * full access until their 30-day session ran out.
  */
 export async function createContext() {
   const store = await cookies();
@@ -23,7 +28,8 @@ export async function createContext() {
       .where(eq(sessions.token, token))
       .get();
 
-    if (row && new Date(row.session.expiresAt) > new Date()) {
+    const live = row && new Date(row.session.expiresAt) > new Date();
+    if (live && row.user.active) {
       user = row.user;
     }
   }

@@ -4,10 +4,9 @@ import type { Database } from "@/db/client";
 import { bookings, classes, type Booking, type GymClass } from "@/db/schema";
 import { hoursUntil } from "@/lib/datetime";
 import { isActiveBooking } from "@/features/bookings/server/booking-policy";
-import {
-  countConfirmedBookings,
-  findActiveBooking,
-} from "@/features/bookings/server/booking-repository";
+import { findActiveBooking } from "@/features/bookings/server/booking-repository";
+import { isClassFull } from "@/features/classes/server/class-capacity";
+import { findChargeableMembership } from "@/features/memberships/server/membership-credits";
 
 /**
  * Members may reschedule free of charge up to this many hours before the
@@ -28,6 +27,14 @@ type Approval = {
   fromClass: GymClass;
   toClass: GymClass;
   targetIsFull: boolean;
+  /**
+   * Credits still to pay for the new spot.
+   *
+   * Normally zero — a confirmed booking moving to a class of the same price has
+   * already paid. It is non-zero when a *waitlist* place (which cost nothing)
+   * becomes a confirmed spot, or when the target class costs more.
+   */
+  outstandingCredits: number;
 };
 
 export type RescheduleEvaluation = Rejection | Approval;
@@ -115,7 +122,27 @@ export async function evaluateReschedule(
     return reject("CONFLICT", "You already have an active booking for this class.");
   }
 
-  const targetIsFull = (await countConfirmedBookings(db, toClass.id)) >= toClass.capacity;
+  const targetIsFull = await isClassFull(db, toClass);
 
-  return { ok: true, booking, fromClass, toClass, targetIsFull };
+  // Landing on a waitlist costs nothing; taking a confirmed spot costs the
+  // difference between what this booking has already paid and what the target
+  // class charges. Without this a member could join the waitlist of a full
+  // class for free and immediately reschedule into an open one, getting a
+  // confirmed spot without spending a credit.
+  const outstandingCredits = targetIsFull
+    ? 0
+    : Math.max(0, toClass.creditCost - booking.creditsUsed);
+
+  if (outstandingCredits > 0) {
+    const membership = await findChargeableMembership(
+      db,
+      booking.membershipId,
+      outstandingCredits,
+    );
+    if (!membership) {
+      return reject("FORBIDDEN", "Not enough class credits remaining.");
+    }
+  }
+
+  return { ok: true, booking, fromClass, toClass, targetIsFull, outstandingCredits };
 }

@@ -80,11 +80,15 @@ where each one lives.
 
 ## Notes
 
+- [`documents/CHANGELOG.md`](documents/CHANGELOG.md) — **start here.** Everything
+  that changed and why, in three phases. Includes the list of behaviour changes
+  to review before comparing against the original.
+- [`documents/FINDINGS.md`](documents/FINDINGS.md) — the issue register: 24 bugs
+  found, each with a repro, the fix, and its severity, plus the ones left open
+  and why.
 - [`documents/ARCHITECTURE.md`](documents/ARCHITECTURE.md) — the structure, the
   reasoning behind it, the alternatives rejected, and how the restructure was
-  checked against the original behaviour.
-- [`documents/FINDINGS.md`](documents/FINDINGS.md) — bugs found in the existing
-  code and what was done about them. Read this before comparing against the
-  original: several fixes deliberately change what you see on screen, including
-  the admin utilisation figures and what happens to your credits when the studio
-  cancels a class.
+  proven not to change behaviour.
+
+> One schema change was made (`checkins.corporate_booking_id`). If you already
+> have a `flexfit.db`, run `pnpm db:push`.

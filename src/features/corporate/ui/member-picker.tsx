@@ -26,8 +26,13 @@ export function MemberPicker({
     { enabled: query.length > MIN_QUERY_LENGTH },
   );
 
+  // Staff are excluded here rather than left to fail on submit: the server
+  // refuses to link anyone who is not a member, so offering trainers and
+  // admins in this list only produces an error the admin cannot act on.
   const linked = new Set(linkedMemberIds);
-  const candidates = (results ?? []).filter((user) => !linked.has(user.id));
+  const candidates = (results ?? []).filter(
+    (user) => user.role === "member" && !linked.has(user.id),
+  );
 
   return (
     <div className="panel p-4 space-y-3">

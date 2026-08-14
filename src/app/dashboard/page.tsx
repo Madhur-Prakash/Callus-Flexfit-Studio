@@ -58,6 +58,7 @@ export default function DashboardPage() {
                 onReschedule={() =>
                   setRescheduleTarget({
                     bookingId: booking.id,
+                    classId: booking.classId,
                     className: booking.className,
                     classTime: booking.startsAt,
                   })

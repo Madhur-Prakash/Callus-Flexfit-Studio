@@ -54,10 +54,18 @@ export const classesRouter = router({
           // `bookings.class_id = classes.id` into `bookings.class_id =
           // bookings.id` and quietly uncorrelate the count. Don't remove the
           // join without rewriting this.
+          //
+          // Both tables are counted: a corporate booking takes a spot in the
+          // same room as a personal one. Counting only `bookings` made a class
+          // that corporate members had filled still look open.
           booked: sql<number>`(
             select count(*) from ${bookings}
             where ${bookings.classId} = ${classes.id}
               and ${bookings.status} in ('booked','attended')
+          ) + (
+            select count(*) from ${corporateBookings}
+            where ${corporateBookings.classId} = ${classes.id}
+              and ${corporateBookings.status} in ('booked','attended')
           )`.as("booked"),
         })
         .from(classes)

@@ -11,6 +11,10 @@ import {
   findActiveMembership,
   refundCredits,
 } from "@/features/memberships/server/membership-credits";
+import {
+  findExistingParticipation,
+  isClassFull,
+} from "@/features/classes/server/class-capacity";
 import { notifyWaitlistPromotion } from "@/features/notifications/server/notify";
 import { router, protectedProcedure, staffProcedure } from "@/server/trpc/procedures";
 import {
@@ -19,7 +23,6 @@ import {
   FREE_CANCELLATION_HOURS,
   isRefundableCancellation,
 } from "./booking-policy";
-import { countConfirmedBookings, findActiveBooking } from "./booking-repository";
 import { promoteFromWaitlist } from "./waitlist";
 
 export { FREE_CANCELLATION_HOURS };
@@ -65,32 +68,34 @@ export const bookingsRouter = router({
 
       assertClassIsBookable(cls);
 
-      const existing = await findActiveBooking(ctx.db, cls.id, ctx.user.id);
-      if (existing) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "You are already on the list for this class.",
-        });
-      }
-
-      const membership = await findActiveMembership(ctx.db, ctx.user.id);
-      if (!membership) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "An active membership is required to book classes.",
-        });
-      }
-
-      if (!canCover(membership, cls.creditCost)) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Not enough class credits remaining.",
-        });
-      }
-
-      // Taking the spot and paying for it are one unit of work.
+      // Everything from here is one unit of work, and every read happens inside
+      // it. Reading the balance outside and charging inside would let two
+      // concurrent bookings both see the old balance and each debit from it.
       return ctx.db.transaction(async (tx) => {
-        const isFull = (await countConfirmedBookings(tx, cls.id)) >= cls.capacity;
+        const existing = await findExistingParticipation(tx, cls.id, ctx.user.id);
+        if (existing) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "You are already on the list for this class.",
+          });
+        }
+
+        const membership = await findActiveMembership(tx, ctx.user.id);
+        if (!membership) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "An active membership is required to book classes.",
+          });
+        }
+
+        if (!canCover(membership, cls.creditCost)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Not enough class credits remaining.",
+          });
+        }
+
+        const isFull = await isClassFull(tx, cls);
 
         const created = await tx
           .insert(bookings)

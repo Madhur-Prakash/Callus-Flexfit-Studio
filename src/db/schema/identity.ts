@@ -29,7 +29,6 @@ export const sessions = sqliteTable("sessions", {
 });
 
 export type User = typeof users.$inferSelect;
-export type Session = typeof sessions.$inferSelect;
 
 /** The three roles the app recognises, in ascending order of privilege. */
 export type Role = User["role"];

@@ -51,5 +51,3 @@ export const corporateBookings = sqliteTable("corporate_bookings", {
 });
 
 export type Company = typeof companies.$inferSelect;
-export type CompanyMember = typeof companyMembers.$inferSelect;
-export type CorporateBooking = typeof corporateBookings.$inferSelect;

@@ -1,17 +1,6 @@
 import type { ReactNode } from "react";
 import { borderStyle } from "./tokens";
 
-/** A bordered card. */
-export function Panel({
-  className = "",
-  children,
-}: {
-  className?: string;
-  children: ReactNode;
-}) {
-  return <div className={`panel ${className}`.trim()}>{children}</div>;
-}
-
 /** A card whose children are rows separated by hairlines. */
 export function PanelList({ children }: { children: ReactNode }) {
   return (

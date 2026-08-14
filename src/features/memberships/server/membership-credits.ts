@@ -2,9 +2,8 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import type { DbClient } from "@/db/client";
 import { memberships, type Membership } from "@/db/schema";
 import { todayIso } from "@/lib/datetime";
-import { hasUnlimitedCredits, UNLIMITED_CREDITS } from "../credits";
+import { hasUnlimitedCredits } from "../credits";
 
-export { hasUnlimitedCredits, UNLIMITED_CREDITS };
 
 /**
  * The membership a member books against: active, not yet ended, and when there

@@ -32,4 +32,3 @@ export const trainerAvailability = sqliteTable("trainer_availability", {
 });
 
 export type GymClass = typeof classes.$inferSelect;
-export type TrainerAvailability = typeof trainerAvailability.$inferSelect;
